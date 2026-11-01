@@ -1,0 +1,16 @@
+{
+  "name": "eventpilot-ai-mvp-local",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Windows-compatible local MVP demo for AI-assisted event planning",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs",
+    "test": "node --test",
+    "check": "node --check server.mjs && node --check src/core.mjs && node --check src/ai.mjs && node --check src/ai-providers.mjs && node --check src/ai-validate.mjs && node --check src/planning.mjs && node --check src/deployment.mjs && node --check public/app.js"
+  },
+  "engines": {
+    "node": ">=20.9"
+  }
+}

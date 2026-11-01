@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#101827"><meta name="description" content="Describe a wedding, birthday or community event in your own words and get an AI-generated, editable plan with budgets, timelines, vendors and an assistant that adapts as things change.">
+  <title>EventPilot AI — Event workspace</title><link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <aside class="sidebar">
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">✳</span><span>eventpilot<span class="brand-ai">.ai</span><small>PLAN WITH CLARITY</small></span></a>
+    <div class="side-label" id="workspace-label">WORKSPACE</div>
+    <nav class="side-nav" aria-labelledby="workspace-label">
+      <button class="nav active" data-view="overview"><span aria-hidden="true">◫</span> Overview</button>
+      <button class="nav" data-view="assistant"><span aria-hidden="true">✦</span> Planning assistant</button>
+      <button class="nav" data-view="budget"><span aria-hidden="true">₹</span> Budget</button>
+      <button class="nav" data-view="timeline"><span aria-hidden="true">◷</span> Timeline &amp; tasks</button>
+      <button class="nav" data-view="vendors"><span aria-hidden="true">⌂</span> Vendors &amp; quotes</button>
+      <button class="nav" data-view="guests"><span aria-hidden="true">♧</span> Guest list</button>
+    </nav>
+    <div class="sidebar-bottom">
+      <div class="local-pill" id="ai-status" role="status" aria-live="polite"><i aria-hidden="true"></i> Checking AI runtime…</div>
+      <p>Local prototype. No user accounts or tenant isolation; do not store real guest contact details.</p>
+    </div>
+  </aside>
+  <main class="main" id="main-content">
+    <header class="topbar"><div><div class="eyebrow">EVENT WORKSPACE / INDIA</div><h1 id="page-title">Your events</h1></div><div class="top-actions"><span class="date-chip" id="today"></span><button class="button primary" id="new-event">＋ New event</button></div></header>
+    <section id="event-list-view" class="view">
+      <div class="hero"><div><div class="eyebrow light">MAKE ROOM FOR WHAT MATTERS</div><h2>Describe the event.<br>The plan follows.</h2><p>Tell the assistant your budget, people and preferences in plain words — it extracts the brief, builds a structured plan, and re-plans when circumstances change.</p><button class="button white" id="hero-create">Start from a description <span aria-hidden="true">→</span></button></div><div class="hero-art"><div class="orbit orbit-a" aria-hidden="true"></div><div class="orbit orbit-b" aria-hidden="true"></div><div class="hero-card"><span>EVENT PLAN</span><strong aria-hidden="true">✓</strong><b>Everything<br>in its place.</b><small>Budget · Timeline · People</small></div></div></div>
+      <div class="section-head"><div><div class="eyebrow">YOUR WORKSPACE</div><h2>Recent events</h2></div><span class="muted" id="event-count">0 events</span></div>
+      <div id="events-grid" class="events-grid"></div>
+    </section>
+    <section id="detail-view" class="view hidden" aria-labelledby="event-name">
+      <div class="event-heading"><div><button class="back-link" id="back-events">← All events</button><div class="eyebrow" id="event-meta">WEDDING · KOLKATA</div><h2 id="event-name">Event name</h2><p id="event-subtitle" class="muted"></p></div><button class="button secondary" id="edit-event">Edit details</button></div>
+      <nav class="tabs" aria-label="Event sections">
+        <button class="tab active" data-view="overview">Overview</button>
+        <button class="tab" data-view="assistant">Assistant</button>
+        <button class="tab" data-view="budget">Budget</button>
+        <button class="tab" data-view="timeline">Timeline &amp; tasks</button>
+        <button class="tab" data-view="vendors">Vendors &amp; quotes</button>
+        <button class="tab" data-view="guests">Guest list</button>
+      </nav>
+      <div id="detail-content"></div>
+    </section>
+  </main>
+
+  <div class="backdrop hidden" id="create-backdrop">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="create-title">
+      <div class="modal-head"><div><div class="eyebrow">AI EVENT CREATION</div><h2 id="create-title">Create an event</h2></div><button class="icon-button" id="close-create" aria-label="Close event creation">×</button></div>
+      <div class="segmented" role="group" aria-label="Creation mode">
+        <button type="button" class="seg active" data-mode="describe" aria-pressed="true">Describe it</button>
+        <button type="button" class="seg" data-mode="manual" aria-pressed="false">Enter details</button>
+      </div>
+      <div id="mode-describe" class="mode-panel">
+        <label class="field-label" for="brief">Describe your event in your own words
+          <textarea id="brief" rows="5" maxlength="4000" placeholder="I want to organise a wedding for about 250 guests in Kolkata. Total budget ₹8 lakh. Traditional Bengali style with elegant decoration and good catering."></textarea>
+        </label>
+        <button type="button" class="button primary" id="understand-btn">Understand my brief ✦</button>
+        <p class="form-note" id="understand-status" role="status" aria-live="polite"></p>
+        <div id="extraction" class="extraction hidden"></div>
+      </div>
+      <form id="mode-manual" class="mode-panel hidden">
+        <label class="field-label">Event name<input name="name" required minlength="2" maxlength="100" placeholder="e.g. Ananya &amp; Arjun's wedding"></label>
+        <div class="form-row">
+          <label class="field-label">Event type<select name="type"><option value="wedding">Wedding</option><option value="birthday">Birthday</option><option value="community">Community event</option></select></label>
+          <label class="field-label">City<input name="city" required value="Kolkata" maxlength="80"></label>
+        </div>
+        <div class="form-row">
+          <label class="field-label">Event date<input name="date" type="date"></label>
+          <label class="field-label">Guest count<input name="guests" type="number" min="0" max="100000" value="100" required></label>
+        </div>
+        <label class="field-label">Total budget (INR)<div class="money-input"><span aria-hidden="true">₹</span><input name="budget" type="number" min="0" max="1000000000" step="0.01" value="500000" required></div></label>
+        <button type="submit" class="button primary">Generate plan →</button>
+      </form>
+      <div class="modal-actions"><button type="button" class="button secondary" id="cancel-create">Cancel</button></div>
+    </div>
+  </div>
+
+  <div class="backdrop hidden" id="review-backdrop">
+    <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="review-title">
+      <div class="modal-head"><div><div class="eyebrow" id="review-eyebrow">REVIEW BEFORE SAVING</div><h2 id="review-title">Your generated plan</h2></div><button class="icon-button" id="close-review" aria-label="Close plan review">×</button></div>
+      <div id="review-body" class="review-body"></div>
+      <div class="modal-actions"><button type="button" class="button secondary" id="discard-review">Discard</button><button type="button" class="button primary" id="save-review">Save this plan</button></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="/app.js"></script>
+</body></html>

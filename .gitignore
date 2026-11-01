@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.*
+!.env.example
+data/events.json
+data/private-uploads/
+.demo-data/
+.DS_Store
+Thumbs.db
+visual-qa/
+.live-check/
+*.tar.gz
+testwrite
