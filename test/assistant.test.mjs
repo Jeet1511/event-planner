@@ -219,9 +219,15 @@ test('user instructions embedded in the brief are treated as data, not commands'
 test('assistant failure keeps the conversation and the plan exactly as they were', async () => {
   await withApp([], async ({ call, provider }) => {
     const event = await createEvent(call);
-    provider.push(new AIProviderError('rate_limited', 'Quota exhausted.'));
+    const limited = new AIProviderError('rate_limited', 'Quota exhausted.', 'Rate limit reached; try again in 11s.');
+    limited.retryAfterSeconds = 11;
+    provider.push(limited);
     const chat = await call(`/api/events/${event.id}/assistant`, { method: 'POST', body: { message: 'Cut the budget in half.' } });
-    assert.equal(chat.status, 503);
+    // A quota refusal is a 429 carrying the provider's own wait time, so the UI
+    // can show a real countdown; every other generation failure stays a 503.
+    assert.equal(chat.status, 429);
+    assert.equal(chat.json.code, 'rate_limited');
+    assert.equal(chat.json.retryAfterSeconds, 11);
     assert.equal(chat.json.keepExistingData, true);
     assert.match(chat.json.error, /rate/i);
     const history = await call(`/api/events/${event.id}/assistant`);
@@ -229,6 +235,67 @@ test('assistant failure keeps the conversation and the plan exactly as they were
     const detail = await call(`/api/events/${event.id}`);
     assert.equal(detail.json.budget, 800000);
     assert.equal(detail.json.tasks.length, event.tasks.length);
+  });
+});
+
+test('a non-quota AI failure is a 503 that still explains itself', async () => {
+  await withApp([], async ({ call, provider }) => {
+    const event = await createEvent(call);
+    provider.push(new AIProviderError('truncated', 'Output ran out of space.', 'Failed to validate JSON.'));
+    provider.push(new AIProviderError('truncated', 'Output ran out of space again.', 'Failed to validate JSON.'));
+    const chat = await call(`/api/events/${event.id}/assistant`, { method: 'POST', body: { message: 'Cut the budget in half.' } });
+    assert.equal(chat.status, 503);
+    assert.equal(chat.json.keepExistingData, true);
+    assert.equal(chat.json.retryAfterSeconds, null);
+    assert.match(chat.json.error, /Planning assistant is unavailable/);
+    assert.ok(chat.json.cause, 'the provider reason is forwarded so the failure is diagnosable');
+    assert.ok(!/gsk_|AIza|https?:\/\//.test(`${chat.json.error} ${chat.json.cause}`), 'no key or endpoint leaks in the error');
+  });
+});
+
+test('a new task may carry an absolute due date instead of a day offset', async () => {
+  // Dates are derived from the run date so the assertions never go stale.
+  const iso = offset => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+  const eventDate = iso(120);
+  const dueDate = iso(30);
+  await withApp([], async ({ call, provider }) => {
+    const event = await createEvent(call, { date: eventDate });
+    // Regression: add_tasks used to reject any absolute dueDate, so the whole op
+    // was dropped and the user's request silently did nothing.
+    provider.push(turn([{ op: 'add_tasks', tasks: [{ title: 'Finalise catering menu earlier', dueDate, priority: 'high' }] }]));
+    const chat = await call(`/api/events/${event.id}/assistant`, { method: 'POST', body: { message: 'Finalise the menu earlier.' } });
+    assert.equal(chat.json.rejected.length, 0, JSON.stringify(chat.json.rejected));
+    assert.equal(chat.json.proposal.actions.length, 1);
+    const approved = await call(`/api/events/${event.id}/actions/${chat.json.proposal.id}/approve`, { method: 'POST', body: {} });
+    const added = approved.json.event.tasks.find(task => task.title === 'Finalise catering menu earlier');
+    assert.ok(added, 'the task was actually added');
+    assert.equal(added.dueDate, dueDate);
+    assert.equal(added.source, 'ai-accepted');
+    assert.notEqual(added.urgency, 'undated', 'a task with a real date is not undated');
+  });
+});
+
+test('a due date already in the past is pulled to today rather than stored as history', async () => {
+  const iso = offset => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+  await withApp([], async ({ call, provider }) => {
+    const event = await createEvent(call, { date: iso(120) });
+    provider.push(turn([{ op: 'add_tasks', tasks: [{ title: 'Chase the venue deposit', dueDate: iso(-9) }] }]));
+    const chat = await call(`/api/events/${event.id}/assistant`, { method: 'POST', body: { message: 'Chase the deposit.' } });
+    assert.equal(chat.json.rejected.length, 0, JSON.stringify(chat.json.rejected));
+    const approved = await call(`/api/events/${event.id}/actions/${chat.json.proposal.id}/approve`, { method: 'POST', body: {} });
+    const added = approved.json.event.tasks.find(task => task.title === 'Chase the venue deposit');
+    assert.equal(added.urgency, 'schedule-now');
+    assert.ok(added.dueDate >= iso(0), `clamped to today, got ${added.dueDate}`);
+  });
+});
+
+test('an impossible due date on a new task is refused, not clamped into nonsense', async () => {
+  await withApp([], async ({ call, provider }) => {
+    const event = await createEvent(call);
+    provider.push(turn([{ op: 'add_tasks', tasks: [{ title: 'Book the hall', dueDate: 'not-a-date' }] }]));
+    const chat = await call(`/api/events/${event.id}/assistant`, { method: 'POST', body: { message: 'Add a task to book the hall.' } });
+    assert.equal(chat.json.proposal, null);
+    assert.match(chat.json.rejected[0].error, /real YYYY-MM-DD/);
   });
 });
 

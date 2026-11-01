@@ -11,7 +11,10 @@ import { eventForPrompt, normalizeAction, sharesToPaise, RUPEE } from './plannin
 export { validateAIProposal, validateExtraction, validateAssistantTurn } from './ai-validate.mjs';
 import { validateAIProposal, validateExtraction, validateAssistantTurn } from './ai-validate.mjs';
 
-const LIMITS = { brief: 4000, message: 3000, history: 40 };
+// Prompt-side caps. The stored conversation keeps its own (larger) limit; these
+// bound what is actually sent, because on a free-tier key every token counts
+// against a per-minute budget and long chats were the main cause of 429s.
+const LIMITS = { brief: 4000, message: 3000, history: 8, historyChars: 400, promptTasks: 14 };
 
 export class AIResponseError extends Error {
   constructor(code, message, raw = '') {
@@ -101,11 +104,33 @@ export const Schemas = {
           properties: {
             op: { type: 'string', enum: ['update_event', 'set_budget_allocation', 'add_budget_category', 'add_tasks', 'update_task', 'remove_task', 'add_vendor_requirement', 'update_vendor_status', 'set_profile', 'add_ideas'] },
             field: { type: 'string' }, value: { type: 'string' }, categoryId: { type: 'string' }, allocationINR: { type: 'number' },
-            name: { type: 'string' }, rationale: { type: 'string' }, tasks: { type: 'array', items: { type: 'object' }, maxItems: 24 },
+            name: { type: 'string' }, rationale: { type: 'string' },
+            // Nested item shapes are declared, not left as free-form objects: an
+            // undocumented field name is silently rejected by screening, so the
+            // model has to be told exactly what a task or idea looks like.
+            tasks: {
+              type: 'array', maxItems: 12,
+              items: {
+                type: 'object', additionalProperties: false, required: ['title'],
+                properties: {
+                  title: { type: 'string' }, description: { type: 'string' },
+                  dueDate: { type: ['string', 'null'] }, relativeDeadlineDays: { type: ['integer', 'null'] },
+                  priority: { type: 'string', enum: ['low', 'medium', 'high'] },
+                  dependsOnTitle: { type: ['string', 'null'] }, rationale: { type: 'string' }
+                }
+              }
+            },
             taskId: { type: 'string' }, title: { type: 'string' }, dueDate: { type: 'string' }, relativeDeadlineDays: { type: ['integer', 'null'] },
             status: { type: 'string' }, category: { type: 'string' }, why: { type: 'string' }, whenBeforeEventDays: { type: ['integer', 'null'] },
             priority: { type: 'string' }, selectionCriteria: { type: 'array', items: { type: 'string' }, maxItems: 8 },
-            vendorId: { type: 'string' }, ideas: { type: 'array', items: { type: 'object' }, maxItems: 12 }
+            vendorId: { type: 'string' },
+            ideas: {
+              type: 'array', maxItems: 8,
+              items: {
+                type: 'object', additionalProperties: false, required: ['title', 'description'],
+                properties: { title: { type: 'string' }, description: { type: 'string' }, personalizationReason: { type: 'string' } }
+              }
+            }
           }
         }
       }
@@ -185,7 +210,7 @@ export function cleanError(error) {
   const status = error instanceof AIProviderError ? error.code : error?.name === 'TimeoutError' ? 'timeout' : 'failed';
   const friendly = {
     timeout: 'The model took too long to answer.',
-    rate_limited: 'The model provider is rate-limiting requests right now.',
+    rate_limited: 'The model provider is rate-limiting this key right now.',
     no_credentials: 'No AI provider is configured on this server.',
     blocked: 'The provider filtered this request.',
     blocked_endpoint: 'That AI endpoint is not allowed by this server.',
@@ -196,13 +221,42 @@ export function cleanError(error) {
     network: 'The AI provider could not be reached.',
     provider_error: 'The AI provider returned an error.',
     bad_request: 'The AI provider rejected the request.',
+    truncated: 'The model ran out of output space before finishing the JSON.',
     oversized: 'The AI provider returned an oversized response.'
-  }[status] || 'The AI request failed.';
-  return { status, message: friendly, detail: raw.replace(/https?:\/\/\S+/g, '[endpoint]').replace(/AIza[\w-]{6,}/g, '[redacted]').replace(/gsk_[\w-]{8,}/g, '[redacted]').slice(0, 300) };
+  }[status] || 'The model response was rejected. Nothing was changed.';
+  const detail = (error instanceof AIProviderError && error.detail ? error.detail : raw)
+    .replace(/https?:\/\/\S+/g, '[endpoint]')
+    .replace(/AIza[\w-]{6,}/g, '[redacted]')
+    .replace(/gsk_[\w-]{8,}/g, '[redacted]')
+    .slice(0, 300);
+  return { status, message: friendly, detail, retryAfterSeconds: error?.retryAfterSeconds ?? null };
 }
 
-function parseJsonObject(content) {
-  const cleaned = String(content).replace(/^\s*```(?:json)?/i, '').replace(/```\s*$/, '').trim();
+/**
+ * JSON Schema → one-line type signature.
+ *
+ * The prompt carries the SHAPE, not the schema document. Providers that can
+ * enforce structure (Gemini `responseSchema`, Ollama `format: schema`) still
+ * receive the full schema object; only Groq/OpenAI-compatible `json_object`
+ * mode relies on the text. Measured on Groq gpt-oss-20b for the same plan
+ * request: 1050 → 435 prompt tokens, with no loss of structure fidelity
+ * because the validators in ai-validate.mjs remain the real contract.
+ */
+function signature(schema) {
+  if (!schema || typeof schema !== 'object') return 'any';
+  if (Array.isArray(schema.enum)) return schema.enum.map(value => JSON.stringify(value)).join('|');
+  const types = Array.isArray(schema.type) ? schema.type : schema.type ? [schema.type] : [];
+  if (types.includes('array') || schema.items) return `[${signature(schema.items)}]`;
+  if (types.includes('object') || schema.properties) {
+    const required = new Set(schema.required || []);
+    return `{${Object.entries(schema.properties || {})
+      .map(([key, value]) => `${required.has(key) ? key : `${key}?`}:${signature(value)}`)
+      .join(',')}}`;
+  }
+  return types.map(type => ({ string: 's', number: 'n', integer: 'i', boolean: 'b' })[type] || type).join('|') || 'any';
+}
+
+function parseJsonObject(content) {  const cleaned = String(content).replace(/^\s*```(?:json)?/i, '').replace(/```\s*$/, '').trim();
   try { return JSON.parse(cleaned); } catch { /* fall through to bracket scan */ }
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
@@ -216,26 +270,40 @@ function parseJsonObject(content) {
  * Structured generation with one controlled recovery pass. A malformed or
  * schema-invalid reply is retried exactly once with the validator's complaint
  * appended; a second failure surfaces as a clean error and nothing is written.
+ *
+ * The recovery pass must change something, otherwise it just repeats the
+ * failure: when the provider reports the JSON was cut off by the output limit,
+ * the cap is raised instead of the prompt being reworded.
  */
-export async function generateStructured({ schemaName, context, validate, provider, timeoutMs, maxOutputTokens, temperature } = {}) {
+export async function generateStructured({ schemaName, context, validate, provider, timeoutMs, maxOutputTokens, temperature, reasoningEffort } = {}) {
   const schema = Schemas[schemaName];
   if (!schema) throw new AIResponseError('bad_config', `Unknown AI schema "${schemaName}".`);
   if (!validate) throw new AIResponseError('bad_config', 'generateStructured needs a validator.');
   const active = provider || activeProvider();
   if (!active) throw new AIResponseError('no_credentials', 'No AI provider is configured.');
   const system = SYSTEM[schemaName] || COMMON_RULES;
-  const basePrompt = `<event_data>${dataBlock(context)}</event_data>\n\nReturn JSON matching this schema exactly:\n${dataBlock(schema)}`;
+  const basePrompt = `<event_data>${dataBlock(context)}</event_data>\n\nReturn one JSON object shaped exactly like this (s=string, n=number, i=integer, ?=optional):\n${signature(schema)}`;
   const attempts = [];
   let lastError = null;
+  let cap = maxOutputTokens;
+  let truncated = false;
   for (let pass = 0; pass < 2; pass += 1) {
-    const prompt = pass === 0 ? basePrompt : `${basePrompt}\n\nYour previous reply was rejected: ${lastError.message}\nReply again with ONLY a corrected JSON object.`;
+    const prompt = pass === 0 || truncated
+      ? basePrompt
+      : `${basePrompt}\n\nYour previous reply was rejected: ${lastError.message}\nReply again with ONLY a corrected JSON object.`;
     try {
-      const result = await active.generate({ schemaName, schema, system, prompt, timeoutMs, maxOutputTokens, temperature });
+      const result = await active.generate({ schemaName, schema, system, prompt, timeoutMs, maxOutputTokens: cap, temperature, reasoningEffort });
       const parsed = parseJsonObject(result.content);
       return { value: validate(parsed, context), model: result.model, provider: result.provider, repaired: pass === 1, usage: result.usage, attempts: attempts.length };
     } catch (error) {
-      if (error instanceof AIProviderError && ['timeout', 'rate_limited', 'network', 'provider_error', 'no_credentials', 'blocked', 'blocked_endpoint', 'bad_config'].includes(error.code)) throw error;
+      if (error instanceof AIProviderError && ['timeout', 'rate_limited', 'network', 'provider_error', 'no_credentials', 'blocked', 'blocked_endpoint', 'bad_config', 'bad_request'].includes(error.code)) throw error;
       attempts.push(cleanError(error).status);
+      truncated = error instanceof AIProviderError && error.code === 'truncated';
+      if (truncated) {
+        cap = Math.min(cap * 2, 4000);
+        lastError = { message: 'the previous reply was cut off by the output token limit' };
+        continue;
+      }
       lastError = cleanError(error);
       if (error instanceof AIResponseError) lastError = { message: `${error.message} Received: ${error.raw.slice(0, 160)}` };
     }
@@ -252,7 +320,7 @@ function planContext(event) {
     },
     profile: event.profile || {},
     brief: text(event.brief, LIMITS.brief) || null,
-    rules: 'Deadlines are whole numbers of days BEFORE the event date, between 0 and 365, or null when no date is set. budgetCategories sharePercent values are percentages of the total budget and must total exactly 100. Provide 6-14 tasks, 3-8 ideas, 4-10 vendor requirements and 3-8 risks.'
+    rules: 'Deadlines are whole numbers of days BEFORE the event date, between 0 and 365, or null when no date is set. budgetCategories sharePercent values are percentages of the total budget and must total exactly 100. Provide 6-10 tasks, 3-5 ideas, 4-6 vendor requirements and 3-5 risks. Keep every string under 140 characters; no filler sentences.'
   };
 }
 
@@ -263,7 +331,11 @@ export async function generatePlan(event, options = {}) {
     validate: value => validateAIProposal(value, event),
     provider: options.provider,
     timeoutMs: options.timeoutMs,
-    maxOutputTokens: options.maxOutputTokens ?? 3000
+    // Measured on Groq gpt-oss-20b with low reasoning: 943 completion tokens for
+    // a full plan. 1600 leaves headroom without letting one call eat most of a
+    // free-tier tokens-per-minute budget; a truncated reply doubles the cap on
+    // the single recovery pass instead of failing outright.
+    maxOutputTokens: options.maxOutputTokens ?? 1600
   });
   return { proposal: generated.value, model: generated.model, provider: generated.provider, repaired: generated.repaired, usage: generated.usage, createdAt: new Date().toISOString() };
 }
@@ -291,7 +363,7 @@ export async function understandBrief(brief, options = {}) {
     validate: value => validateExtraction(value, String(brief || '')),
     provider: options.provider,
     timeoutMs: options.timeoutMs,
-    maxOutputTokens: options.maxOutputTokens ?? 1200,
+    maxOutputTokens: options.maxOutputTokens ?? 900,
     temperature: 0.1
   });
   return { extraction: generated.value, model: generated.model, provider: generated.provider, createdAt: new Date().toISOString() };
@@ -299,11 +371,11 @@ export async function understandBrief(brief, options = {}) {
 
 function assistantContext(event, message, history) {
   return {
-    event: eventForPrompt(event),
-    conversation: (history || []).slice(-LIMITS.history).map(item => ({ role: item.role === 'user' ? 'user' : 'assistant', text: text(item.content, 1200) })),
+    event: eventForPrompt(event, { maxTasks: LIMITS.promptTasks }),
+    conversation: (history || []).slice(-LIMITS.history).map(item => ({ role: item.role === 'user' ? 'user' : 'assistant', text: text(item.content, LIMITS.historyChars) })),
     latestUserMessage: text(message, LIMITS.message),
     today: indiaDateToday(),
-    rules: 'Actions are proposals the user must approve. Only reference ids that appear in event state. For budget or guest changes, propose the specific category allocations the application should set; totals are recalculated by the application.'
+    rules: 'Actions are proposals the user must approve. Only reference ids that appear in event state. For budget or guest changes, propose the specific category allocations the application should set; totals are recalculated by the application. Keep reply under 700 characters and impactSummary under 200; propose at most 6 actions.'
   };
 }
 
@@ -316,7 +388,7 @@ export async function assistantTurn({ event, message, history = [], focus = null
     validate: value => validateAssistantTurn(value, event),
     provider,
     timeoutMs,
-    maxOutputTokens: maxOutputTokens ?? 2500
+    maxOutputTokens: maxOutputTokens ?? 1200
   });
   return { turn: generated.value, model: generated.model, provider: generated.provider, repaired: generated.repaired, createdAt: new Date().toISOString() };
 }

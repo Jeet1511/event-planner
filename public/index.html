@@ -2,51 +2,121 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#101827"><meta name="description" content="Describe a wedding, birthday or community event in your own words and get an AI-generated, editable plan with budgets, timelines, vendors and an assistant that adapts as things change.">
+  <meta name="theme-color" content="#17211d"><meta name="description" content="Describe a wedding, birthday or community event in your own words and get an AI-generated, editable plan with budgets, timelines, vendors and a planner that adapts as things change.">
   <title>EventPilot AI — Event workspace</title><link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to main content</a>
-  <aside class="sidebar">
-    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">✳</span><span>eventpilot<span class="brand-ai">.ai</span><small>PLAN WITH CLARITY</small></span></a>
-    <div class="side-label" id="workspace-label">WORKSPACE</div>
-    <nav class="side-nav" aria-labelledby="workspace-label">
-      <button class="nav active" data-view="overview"><span aria-hidden="true">◫</span> Overview</button>
-      <button class="nav" data-view="assistant"><span aria-hidden="true">✦</span> Planning assistant</button>
-      <button class="nav" data-view="budget"><span aria-hidden="true">₹</span> Budget</button>
-      <button class="nav" data-view="timeline"><span aria-hidden="true">◷</span> Timeline &amp; tasks</button>
-      <button class="nav" data-view="vendors"><span aria-hidden="true">⌂</span> Vendors &amp; quotes</button>
-      <button class="nav" data-view="guests"><span aria-hidden="true">♧</span> Guest list</button>
+  <div class="shell">
+    <nav class="rail" aria-label="Workspace sections">
+      <span class="rail-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6L5.6 18.4"/></svg>
+      </span>
+      <button class="rail-btn active" data-view="overview" aria-label="Overview" title="Overview">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.4"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.4"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.4"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.4"/></svg>
+      </button>
+      <button class="rail-btn" data-view="budget" aria-label="Budget" title="Budget">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M9 8h6M9 11h6M12.5 8c1.8 0 2.8 1.2 2.8 2.6 0 1.7-1.4 2.9-3.3 2.9H9.5l4.8 4.5"/></svg>
+      </button>
+      <button class="rail-btn" data-view="timeline" aria-label="Timeline and tasks" title="Timeline &amp; tasks">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4M8 13.5h5M8 16.5h8"/></svg>
+      </button>
+      <button class="rail-btn" data-view="vendors" aria-label="Vendors and quotes" title="Vendors &amp; quotes">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 9.5 5.6 4.5h12.8L20 9.5M4 9.5h16M4 9.5v10h16v-10M9.5 19.5v-6h5v6"/></svg>
+      </button>
+      <button class="rail-btn" data-view="guests" aria-label="Guest list" title="Guest list">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19c.6-3.4 2.8-5.2 5.5-5.2s4.9 1.8 5.5 5.2M15.5 6.2a3.2 3.2 0 0 1 0 5.6M17.5 14.2c2 .7 3.2 2.4 3.6 4.8"/></svg>
+      </button>
+      <div class="rail-foot">
+        <div class="ai-dot" id="ai-status" role="status" aria-live="polite" title="Checking AI runtime…"><i aria-hidden="true"></i><span class="sr-only">Checking AI runtime…</span></div>
+      </div>
     </nav>
-    <div class="sidebar-bottom">
-      <div class="local-pill" id="ai-status" role="status" aria-live="polite"><i aria-hidden="true"></i> Checking AI runtime…</div>
-      <p>Local prototype. No user accounts or tenant isolation; do not store real guest contact details.</p>
-    </div>
-  </aside>
-  <main class="main" id="main-content">
-    <header class="topbar"><div><div class="eyebrow">EVENT WORKSPACE / INDIA</div><h1 id="page-title">Your events</h1></div><div class="top-actions"><span class="date-chip" id="today"></span><button class="button primary" id="new-event">＋ New event</button></div></header>
-    <section id="event-list-view" class="view">
-      <div class="hero"><div><div class="eyebrow light">MAKE ROOM FOR WHAT MATTERS</div><h2>Describe the event.<br>The plan follows.</h2><p>Tell the assistant your budget, people and preferences in plain words — it extracts the brief, builds a structured plan, and re-plans when circumstances change.</p><button class="button white" id="hero-create">Start from a description <span aria-hidden="true">→</span></button></div><div class="hero-art"><div class="orbit orbit-a" aria-hidden="true"></div><div class="orbit orbit-b" aria-hidden="true"></div><div class="hero-card"><span>EVENT PLAN</span><strong aria-hidden="true">✓</strong><b>Everything<br>in its place.</b><small>Budget · Timeline · People</small></div></div></div>
-      <div class="section-head"><div><div class="eyebrow">YOUR WORKSPACE</div><h2>Recent events</h2></div><span class="muted" id="event-count">0 events</span></div>
-      <div id="events-grid" class="events-grid"></div>
-    </section>
-    <section id="detail-view" class="view hidden" aria-labelledby="event-name">
-      <div class="event-heading"><div><button class="back-link" id="back-events">← All events</button><div class="eyebrow" id="event-meta">WEDDING · KOLKATA</div><h2 id="event-name">Event name</h2><p id="event-subtitle" class="muted"></p></div><button class="button secondary" id="edit-event">Edit details</button></div>
-      <nav class="tabs" aria-label="Event sections">
-        <button class="tab active" data-view="overview">Overview</button>
-        <button class="tab" data-view="assistant">Assistant</button>
-        <button class="tab" data-view="budget">Budget</button>
-        <button class="tab" data-view="timeline">Timeline &amp; tasks</button>
-        <button class="tab" data-view="vendors">Vendors &amp; quotes</button>
-        <button class="tab" data-view="guests">Guest list</button>
-      </nav>
-      <div id="detail-content"></div>
-    </section>
-  </main>
+
+    <main class="stage" id="main-content">
+      <header class="stage-head">
+        <div class="stage-title">
+          <button class="back-link hidden" id="back-events">All events</button>
+          <div>
+            <div class="crumb" id="event-meta">Your events</div>
+            <h1 id="page-title">Your events</h1>
+            <p class="stage-sub hidden" id="event-subtitle"></p>
+          </div>
+        </div>
+        <div class="stage-actions">
+          <span class="date-chip" id="today"></span>
+          <button class="button ghost hidden" id="edit-event">Edit details</button>
+          <button class="button primary" id="new-event">New event</button>
+        </div>
+      </header>
+
+      <section id="event-list-view" class="view">
+        <div class="hero">
+          <div class="hero-copy">
+            <h2>Describe the event. The plan follows.</h2>
+            <p>Tell your planner the budget, the people and the preferences in plain words. It extracts the brief, builds a structured plan in rupees and real dates, and re-plans with you when circumstances change.</p>
+            <button class="button primary big" id="hero-create">Start from a description</button>
+          </div>
+          <div class="hero-ledger" aria-hidden="true">
+            <span class="ledger-row"><i>Venue</i><b>₹3,06,000</b></span>
+            <span class="ledger-row"><i>Catering</i><b>₹6,12,000</b></span>
+            <span class="ledger-row"><i>Photography</i><b>₹1,62,000</b></span>
+            <span class="ledger-total"><i>Total, computed here</i><b>₹18,00,000</b></span>
+          </div>
+        </div>
+        <div class="section-head"><h2>Recent events</h2><span class="muted" id="event-count">0 events</span></div>
+        <div id="events-grid" class="events-grid"></div>
+      </section>
+
+      <section id="detail-view" class="view hidden" aria-labelledby="page-title">
+        <div class="chips" id="event-chips"></div>
+        <nav class="tabs" aria-label="Event sections">
+          <button class="tab active" data-view="overview">Overview</button>
+          <button class="tab" data-view="budget">Budget</button>
+          <button class="tab" data-view="timeline">Timeline &amp; tasks</button>
+          <button class="tab" data-view="vendors">Vendors &amp; quotes</button>
+          <button class="tab" data-view="guests">Guest list</button>
+        </nav>
+        <div id="detail-content"></div>
+      </section>
+    </main>
+
+    <aside class="planner" aria-label="Planning assistant">
+      <div class="planner-head">
+        <div>
+          <h2>Your planner</h2>
+          <p id="planner-sub">Reads this event’s live plan. Nothing changes until you approve it.</p>
+        </div>
+        <button class="planner-close" id="planner-close" aria-label="Close the planner panel">Done</button>
+      </div>
+      <div class="planner-body" id="planner-body">
+        <div class="chat-empty" id="chat-empty">
+          <p><b>Open an event</b> and your planner joins the conversation with its full plan in context.</p>
+        </div>
+        <div class="chat-scroll hidden" id="chat-scroll">
+          <div class="chat-error hidden" id="chat-error" role="alert"></div>
+          <div class="transcript" id="transcript" aria-live="polite" aria-relevant="additions"></div>
+          <div id="chat-proposals"></div>
+        </div>
+      </div>
+      <div class="planner-foot hidden" id="planner-foot">
+        <div class="quick-prompts" id="quick-prompts"></div>
+        <form class="composer" id="assistant-form">
+          <label class="sr-only" for="assistant-input">Message the planning assistant</label>
+          <textarea id="assistant-input" name="message" rows="2" maxlength="3000" placeholder="Ask about this event, or describe a change…"></textarea>
+          <div class="composer-row">
+            <span class="composer-hint">Enter sends · Shift+Enter adds a line</span>
+            <button class="button primary" type="submit" id="assistant-send">Send</button>
+          </div>
+        </form>
+      </div>
+    </aside>
+  </div>
+
+  <button class="planner-fab hidden" id="planner-fab" aria-controls="planner-body" aria-expanded="false">Ask your planner</button>
 
   <div class="backdrop hidden" id="create-backdrop">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="create-title">
-      <div class="modal-head"><div><div class="eyebrow">AI EVENT CREATION</div><h2 id="create-title">Create an event</h2></div><button class="icon-button" id="close-create" aria-label="Close event creation">×</button></div>
+      <div class="modal-head"><div><div class="crumb">New event</div><h2 id="create-title">Create an event</h2></div><button class="icon-button" id="close-create" aria-label="Close event creation">×</button></div>
       <div class="segmented" role="group" aria-label="Creation mode">
         <button type="button" class="seg active" data-mode="describe" aria-pressed="true">Describe it</button>
         <button type="button" class="seg" data-mode="manual" aria-pressed="false">Enter details</button>
@@ -55,7 +125,7 @@
         <label class="field-label" for="brief">Describe your event in your own words
           <textarea id="brief" rows="5" maxlength="4000" placeholder="I want to organise a wedding for about 250 guests in Kolkata. Total budget ₹8 lakh. Traditional Bengali style with elegant decoration and good catering."></textarea>
         </label>
-        <button type="button" class="button primary" id="understand-btn">Understand my brief ✦</button>
+        <button type="button" class="button primary" id="understand-btn">Understand my brief</button>
         <p class="form-note" id="understand-status" role="status" aria-live="polite"></p>
         <div id="extraction" class="extraction hidden"></div>
       </div>
@@ -70,7 +140,7 @@
           <label class="field-label">Guest count<input name="guests" type="number" min="0" max="100000" value="100" required></label>
         </div>
         <label class="field-label">Total budget (INR)<div class="money-input"><span aria-hidden="true">₹</span><input name="budget" type="number" min="0" max="1000000000" step="0.01" value="500000" required></div></label>
-        <button type="submit" class="button primary">Generate plan →</button>
+        <button type="submit" class="button primary">Generate plan</button>
       </form>
       <div class="modal-actions"><button type="button" class="button secondary" id="cancel-create">Cancel</button></div>
     </div>
@@ -78,7 +148,7 @@
 
   <div class="backdrop hidden" id="review-backdrop">
     <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="review-title">
-      <div class="modal-head"><div><div class="eyebrow" id="review-eyebrow">REVIEW BEFORE SAVING</div><h2 id="review-title">Your generated plan</h2></div><button class="icon-button" id="close-review" aria-label="Close plan review">×</button></div>
+      <div class="modal-head"><div><div class="crumb" id="review-eyebrow">Review before saving</div><h2 id="review-title">Your generated plan</h2></div><button class="icon-button" id="close-review" aria-label="Close plan review">×</button></div>
       <div id="review-body" class="review-body"></div>
       <div class="modal-actions"><button type="button" class="button secondary" id="discard-review">Discard</button><button type="button" class="button primary" id="save-review">Save this plan</button></div>
     </div>

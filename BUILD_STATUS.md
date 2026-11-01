@@ -1,27 +1,32 @@
 # EventPilot AI — Build Status
 
-**Build:** v2 — Groq-backed GenAI planning assistant, performance pass applied
+**Build:** v4 — Groq-backed planning assistant in a permanent right-hand rail; AI token cost halved
 **Target hosting:** Render (still blocked; see below)
 **Release decision:** NOT PRODUCTION READY — deployment intentionally blocked
 
-## Verified in this environment (2026-11-01)
+## Verified in this environment (2026-11-01, v4)
 
 - Node.js v24.21.0 on Windows.
-- `npm test`: **63 tests, 0 failures** under `TZ=UTC` and `TZ=Asia/Kolkata`.
+- `npm test`: **68 tests, 0 failures** under `TZ=UTC` and `TZ=Asia/Kolkata`.
 - `npm run check`: passes (server, all `src/` modules, browser client).
-- **Live Groq generation, real calls, no mocks:** natural-language brief → extracted fields
-  (250 guests, ₹8,00,000, Kolkata, Bengali-traditional, vegetarian) → 4 focused follow-up
-  questions → full structured plan (strategy, budget, timeline with dependencies, vendor
-  requirements with why/lead-time/criteria, ideas, risks). Model `openai/gpt-oss-20b`; budget
-  shares reconciled to **exactly 80000000 paise** against an ₹8,00,000 total.
-- Provider health correctly distinguished `remote_model_ready` from `model_missing` (the key did
-  not list `llama-3.3-70b-versatile`) and from HTTP 404 on a wrong base URL.
-- Rate-limit behaviour observed live: Groq free tier returned HTTP 429 → the app answered 503 with
-  `keepExistingData: true`, wrote no conversation, and left the saved plan untouched.
-- Browser walkthrough (headless, 1440×900 and 390×844) of intake → plan review → save → assistant
-  proposal → approve → dismiss → vendor status → keyboard dialog open/Escape.
-- Performance before/after measured on a seeded 40-event store; see the table in `README.md`.
-  List payload 616,451 → 20,231 bytes; list p50 10.2 → 3.3 ms; heap after bench 37.5 → 16.6 MB.
+- **Live Groq assistant turns that propose real actions, observed end to end** — the gap that was
+  open in v3 is closed. Three consecutive turns answered in 0.8–2.0 s with 4, 1 and 1 accepted
+  actions and a deterministic before/after money table; a fourth turn ("the photographer cancelled")
+  produced `update_task` + 2 `add_tasks` + a reallocation, and approving it from the rail changed the
+  stored plan. The earlier failure was not the model: it was token cost against an 8,000 TPM free
+  tier plus a provider 400 that the recovery pass reproduced verbatim.
+- **Live plan generation:** 1,458 tokens (650 prompt + 808 completion) versus 2,978 before, model
+  `openai/gpt-oss-20b`, shares reconciled to exact paise.
+- **Honest failure path, live:** when the burst exceeded the per-minute budget the API answered
+  `429` with `retryAfterSeconds: 11` and a `retry-after` header; the rail rendered the reason, the
+  countdown and a Try again button, and wrote nothing.
+- Browser walkthrough (headless, 1440×900 and 390×844) of the redesigned workspace: intake → plan
+  review → save → chat in the rail → approve → dismiss → tab switching with the composer text intact →
+  mobile bottom sheet. 13/13 behaviour checks, 0 console errors, 0 failed requests, 0 px of horizontal
+  overflow.
+- Keyboard: 14/14 tab stops render a visible focus ring; contrast measured per element — the primary
+  button was **3.65:1 (failing AA)** on vivid marigold, so labelled marigold surfaces moved to
+  `#a35a06` (5.22:1); every other measured pair is ≥4.65:1.
 
 ## Implemented since Trial 15
 
@@ -39,6 +44,24 @@
 - Approval workflow: the assistant proposes typed actions, deterministic code screens them, the user
   approves or dismisses, and approval re-validates against the **persisted** event fingerprint.
 - Guest names and contact details are excluded from every prompt; only aggregate counts are shared.
+- v4 interface: the workspace is an icon rail, the plan, and a **permanent planner rail** on the
+  right — the assistant is no longer a page you navigate to. The composer lives in static DOM, so a
+  re-render never eats your half-typed message; proposals are approved inside the conversation that
+  produced them; the four metric cards that repeated under every tab became one chip row. Below
+  900px the rail is a bottom sheet behind an "Ask your planner" button.
+- v4 defects found by probing and then fixed with a regression test each:
+  - `add_tasks` accepted only a day offset, so a model-supplied absolute `dueDate` rejected the
+    **whole** operation and the user's request silently did nothing. Absolute dates are now resolved
+    in code (clamped to today and to the event date), an impossible date is still refused with a clear
+    reason, and a dated task is no longer labelled "undated".
+  - Groq answers HTTP 400 "Failed to validate JSON" when the reply is cut off by `max_tokens`. The
+    recovery pass resent the identical request and was therefore guaranteed to fail again; a
+    truncation now doubles the cap once.
+  - A quota refusal was reported to the user as "The AI request failed." and answered 503. It is now
+    `429` + `retry-after` + `retryAfterSeconds` + the provider's own redacted reason, rendered in the
+    rail with a countdown.
+  - The nested `tasks` and `ideas` item shapes inside the assistant contract were free-form objects,
+    so the model had to guess field names. They are now declared.
 
 ## Not implemented / not verified
 
@@ -46,15 +69,17 @@
   production-startup refusal are still enforced by `src/deployment.mjs`. Do not expose this build.
 - Render PostgreSQL, migrations, private object storage and malware scanning are not implemented.
 - Unapproved AI proposals live in server memory and are lost on restart (documented in the UI).
-- A **live Groq assistant turn that produced actions has not been observed**: the two attempts hit
-  the free-tier 429 limit. The approve/dismiss path is verified against the deterministic mock and
-  the scripted demo provider only.
+- Sustained chat is still quota-bound: three turns in a row fit the free tier, a fourth could return
+  429 with an 11-second wait. The app now says so instead of failing silently; raising the ceiling
+  needs a paid tier or a second key, which is the user's decision.
 - Gemini has never been exercised against the real Google endpoint (no Gemini key configured); its
   adapter is verified against a local fake Gemini server (`test/gemini.test.mjs`).
-- Screen-reader testing, full WCAG 2.2 AA audit, load/concurrency testing, backup/restore and
-  multi-process concurrency are not done. The final visual re-audit after the last UI fixes
-  (aria-labels on 5 inline fields, mobile nav wrap, contrast corrections) was not re-run.
-- Model output quality is not benchmarked; structure and arithmetic are validated, taste is not.
+- Screen-reader testing and a full WCAG 2.2 AA audit are not done. Automated contrast, focus-ring,
+  overflow and console checks are (see above); axe has not been run.
+- Model output quality is not benchmarked. Structure and arithmetic are validated; taste is not. One
+  measured weakness: asked to cut ₹18 lakh to ₹14 lakh, the model proposed allocations summing to
+  ₹16.8 lakh and described the result as ₹14 lakh. The deterministic table shows the true total, so
+  the user sees the discrepancy rather than the model's claim.
 
 ## Release gate
 

@@ -379,12 +379,32 @@ export function createApp({ dataDir, ai = null, now = () => new Date() } = {}) {
       return await withAiSlot(() => request(provider));
     } catch (error) {
       const cleaned = cleanError(error);
-      return { unavailable: true, code: cleaned.status, detail: `${label} is unavailable (${cleaned.message}).`, cause: cleaned.detail };
+      // The provider's own reason is forwarded (redacted) so the UI can say what
+      // actually happened and when to retry, instead of a generic failure line.
+      return {
+        unavailable: true, code: cleaned.status, detail: `${label} is unavailable: ${cleaned.message}`,
+        cause: cleaned.detail, retryAfterSeconds: cleaned.retryAfterSeconds
+      };
     }
   }
 
   function providerModeLabel(providerId) {
     return providerId === 'ollama' ? 'local-ollama' : `${providerId}-structured`;
+  }
+
+  /**
+   * One shape for every AI failure, so the client can always tell the user what
+   * happened and whether retrying will help. A quota refusal is a 429 with the
+   * provider's own wait time; everything else that stops generation is a 503.
+   * Saved data is never touched on this path.
+   */
+  function sendAiFailure(res, result, extra = {}) {
+    const status = result.code === 'rate_limited' ? 429 : 503;
+    if (result.retryAfterSeconds) res.setHeader('retry-after', String(result.retryAfterSeconds));
+    return send(res, status, {
+      error: result.detail, code: result.code, cause: result.cause || null,
+      retryAfterSeconds: result.retryAfterSeconds ?? null, keepExistingData: true, ...extra
+    });
   }
 
   async function eventById(id) {
@@ -423,7 +443,7 @@ export function createApp({ dataDir, ai = null, now = () => new Date() } = {}) {
       if (brief.length < 12) throw new HttpError(400, 'Describe your event in a sentence or two first.');
       takeQuota(`${req.socket.remoteAddress}:understand`);
       const result = await aiCall('Event understanding', provider => understandBrief(brief, { provider }));
-      if (result.unavailable) return send(res, 503, { error: result.detail, code: result.code, fallback: 'manual-form', brief });
+      if (result.unavailable) return sendAiFailure(res, result, { fallback: 'manual-form', brief });
       send(res, 200, { extraction: result.extraction, provider: result.provider, model: result.model, generatedAt: result.createdAt, brief });
     },
 
@@ -439,6 +459,8 @@ export function createApp({ dataDir, ai = null, now = () => new Date() } = {}) {
         plan.aiGenerated = false;
         plan.aiStatus = result.code;
         plan.aiDetail = result.detail;
+        plan.aiCause = result.cause || null;
+        plan.aiRetryAfterSeconds = result.retryAfterSeconds ?? null;
         plan.strategy = fallbackStrategy(plan.event);
         plan.risks = fallbackRisks(plan.event);
         plan.vendorRequirements = fallbackVendorRequirements(plan.event);
@@ -543,7 +565,7 @@ export function createApp({ dataDir, ai = null, now = () => new Date() } = {}) {
       takeQuota(`${req.socket.remoteAddress}:${id.slice(0, 8)}:assistant`);
       const history = snapshot.conversation || [];
       const result = await aiCall('Planning assistant', provider => assistantTurn({ event: snapshot, message: prompt, history, focus, provider }));
-      if (result.unavailable) return send(res, 503, { error: result.detail, code: result.code, keepExistingData: true, event: safeEvent(snapshot) });
+      if (result.unavailable) return sendAiFailure(res, result, { keepExistingData: true, event: safeEvent(snapshot) });
 
       const turn = result.turn;
       const { accepted, rejected } = screenActions(snapshot, turn.actions);

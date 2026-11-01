@@ -74,7 +74,10 @@ export function resolveSchedule(tasks, eventDate, today = indiaDateToday()) {
   const warnings = [];
   const scheduled = tasks.map(task => {
     if (!eventDate || task.relativeDeadlineDays === null || task.relativeDeadlineDays === undefined) {
-      return { ...task, dueDate: task.dueDate ?? null, urgency: 'undated' };
+      // An explicit date supplied by the caller is still a real deadline, so it
+      // gets real urgency instead of being labelled "undated".
+      const given = task.dueDate ?? null;
+      return { ...task, dueDate: given, urgency: given ? (given <= today ? 'schedule-now' : 'normal') : 'undated' };
     }
     const ideal = shiftDate(eventDate, task.relativeDeadlineDays);
     const overdue = ideal < today;
@@ -278,12 +281,26 @@ export function normalizeAction(action, event, { now = new Date() } = {}) {
         const title = text(item?.title, 160);
         if (title.length < 2) return { error: 'Every task needs a title of 2–160 characters.' };
         if (existing.has(title.toLowerCase())) continue;
-        const relative = item?.relativeDeadlineDays;
-        if (!(relative === null || relative === undefined || (Number.isInteger(relative) && relative >= 0 && relative <= 365))) return { error: `Task "${title}" has an invalid deadline offset.` };
+        // A deadline may arrive either way: days before the event, or an actual
+        // date. Both are resolved here in code — the model never does date maths.
+        // Rejecting an absolute date used to drop the whole op, so a perfectly
+        // good "finalise the menu earlier" task silently disappeared.
+        let relative = item?.relativeDeadlineDays;
+        let dueDate = null;
+        if (relative !== null && relative !== undefined && !(Number.isInteger(relative) && relative >= 0 && relative <= 365)) {
+          return { error: `Task "${title}" has an invalid deadline offset.` };
+        }
+        if ((relative === null || relative === undefined) && item?.dueDate !== undefined && item?.dueDate !== null && item?.dueDate !== '') {
+          const parsed = isoDate(String(item.dueDate));
+          if (!parsed) return { error: `Task "${title}" needs a real YYYY-MM-DD due date.` };
+          const today = indiaDateToday(now);
+          const latest = event.date && event.date > today ? event.date : null;
+          dueDate = parsed < today ? today : (latest && parsed > latest ? latest : parsed);
+        }
         const priority = ['low', 'medium', 'high'].includes(item?.priority) ? item.priority : 'medium';
         const dependency = text(item?.dependsOnTitle, 160);
         existing.add(title.toLowerCase());
-        tasks.push({ title, description: text(item?.description, 300), relativeDeadlineDays: relative ?? null, priority, dependsOnTitle: dependency || null, rationale: text(item?.rationale, 240) });
+        tasks.push({ title, description: text(item?.description, 300), relativeDeadlineDays: relative ?? null, dueDate, priority, dependsOnTitle: dependency || null, rationale: text(item?.rationale, 240) });
       }
       return tasks.length ? { ...action, tasks } : { error: 'Those tasks already exist on this event.' };
     }
@@ -464,7 +481,7 @@ export function daysBetween(eventDate, dueDate) {
 }
 
 /** Re-validated so a persisted event that drifted is caught before prompting. */
-export function eventForPrompt(event) {
+export function eventForPrompt(event, { maxTasks = 14, maxTitleChars = 90 } = {}) {
   const summary = budgetView(event);
   return {
     name: event.name,
@@ -483,7 +500,8 @@ export function eventForPrompt(event) {
       overBudget: summary.overSpent
     },
     budgetCategories: (event.categories || []).map(c => ({ id: c.id, name: c.name, allocationINR: Number(c.allocation), spentINR: RUPEE(categorySpend(event, c.id)) })),
-    openTasks: (event.tasks || []).filter(t => t.status !== 'completed').slice(0, 40).map(t => ({ id: t.id, title: t.title, dueDate: t.dueDate, priority: t.priority })),
+    openTasks: (event.tasks || []).filter(t => t.status !== 'completed').slice(0, maxTasks).map(t => ({ id: t.id, title: String(t.title || '').slice(0, maxTitleChars), dueDate: t.dueDate, priority: t.priority })),
+    openTaskCount: (event.tasks || []).filter(t => t.status !== 'completed').length,
     completedTaskCount: (event.tasks || []).filter(t => t.status === 'completed').length,
     vendorRequirements: (event.vendorRequirements || []).map(v => ({ id: v.id, category: v.category })),
     vendors: (event.vendors || []).map(v => ({ id: v.id, category: v.category, status: v.status })),

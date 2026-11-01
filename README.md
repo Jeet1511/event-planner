@@ -74,7 +74,8 @@ reviewed before saving, and assistant changes are applied only after you approve
 - [x] Wedding, birthday and community templates
 - [x] Natural-language event brief → extracted, editable, confirmed fields
 - [x] AI plan: strategy, budget shares, dependent timeline, vendor why/when, risks, ideas
-- [x] Event-context planning assistant with approve/dismiss action proposals
+- [x] Event-context planning assistant with approve/dismiss action proposals, permanently docked in
+  a right-hand rail beside every workspace view (not a page you navigate to)
 - [x] Targeted revisions (budget, timeline, vendors, ideas, risk) that preserve untouched records
 - [x] INR budget allocation using integer paise arithmetic (largest-remainder, exact totals)
 - [x] Expense recording, budget summaries and deterministic plan-health checks
@@ -131,9 +132,42 @@ What changed:
 behaviour, p95 latency at 40 events, read-cache invalidation and the bounded AI queue. It reads raw
 `http` responses because `fetch` decompresses silently and would measure nothing.
 
-Frontend budget: 55.8 KB of `app.js` + 18.2 KB of CSS, zero dependencies, zero build step, one
-module request. There is no framework, so there is no hydration, no code-splitting decision and no
-bundle graph to audit — the whole client is smaller than one typical React app shell.
+Frontend budget: 58.2 KB of `app.js` + 25.1 KB of CSS + 10.8 KB of HTML, zero dependencies, zero
+build step, one module request. There is no framework, so there is no hydration, no code-splitting
+decision and no bundle graph to audit — the whole client is smaller than one typical React app shell.
+
+### AI token cost (the reason chat used to appear dead)
+
+Groq's free tier allows this key **8,000 tokens per minute**. The first measured plan call cost
+2,978 tokens (1,050 prompt + 1,928 completion, of which 338 were the model thinking out loud), so
+one plan ate over a third of a minute's budget and the automatic recovery pass was then refused
+with HTTP 429. Measured on the live key after the fix:
+
+| Call | Before | After | Change |
+| --- | --- | --- | --- |
+| plan prompt tokens | 1,050 | 650 | −38% |
+| plan completion tokens | 1,928 | 808 | −58% |
+| plan total tokens | 2,978 | **1,458** | −51% |
+| reasoning tokens | 338 | 6 | −98% |
+| assistant turn latency | 429 / fail | **0.8–2.0 s** | usable |
+
+What changed, each with a measurement behind it:
+
+- **The JSON Schema left the prompt.** Groq's `json_object` mode cannot enforce a schema, so the
+  2,432-character schema document was pure token cost. It is now derived into a one-line type
+  signature (`{tasks:[{title:s,…}]}), which is smaller *and* clearer. Providers that can enforce
+  structure (Gemini `responseSchema`, Ollama `format`) still receive the real schema object.
+- **`reasoning_effort: low`** for `openai/gpt-oss` models: 338 reasoning tokens became 6.
+- **Right-sized output caps** (plan 3,000 → 1,600, assistant 2,500 → 1,200, intake 1,200 → 900)
+  plus terseness rules in the prompt. The cap is not a cliff: a truncated reply now doubles the cap
+  once instead of resending an identical request.
+- **Prompt context trimmed**: open tasks capped at 14 with titles capped at 90 characters, and
+  conversation history in the prompt capped at 8 messages × 400 characters (the stored history keeps
+  its own 60-message limit).
+
+A real cost reduction, not a cosmetic one: the same minute now fits about five generations instead
+of two, which is the difference between a chat that answers and a chat that silently falls back to
+templates.
 
 ## Deployment target: Render
 

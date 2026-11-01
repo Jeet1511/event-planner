@@ -15,10 +15,14 @@ const LINK_LOCAL_HOSTS = new Set(['169.254.169.254', 'metadata.google.internal',
 const GEMINI_HOST_ALLOWLIST = new Set(['generativelanguage.googleapis.com']);
 
 export class AIProviderError extends Error {
-  constructor(code, message) {
+  constructor(code, message, detail = '') {
     super(message);
     this.name = 'AIProviderError';
     this.code = code;
+    /** Provider-side explanation, kept out of user-facing copy. */
+    this.detail = String(detail).slice(0, 300);
+    /** Seconds the provider asked us to wait, when it told us. */
+    this.retryAfterSeconds = null;
   }
 }
 
@@ -228,21 +232,27 @@ export function createOpenAICompatibleProvider({
         return { status: 'runtime_unavailable', provider: id, model, detail: error.message || `${label} is not reachable.` };
       }
     },
-    async generate({ schemaName, schema, system, prompt, temperature = 0.2, maxOutputTokens = 3000, timeoutMs = 45000 } = {}) {
+    async generate({ schemaName, schema, system, prompt, temperature = 0.2, maxOutputTokens = 3000, timeoutMs = 45000, reasoningEffort } = {}) {
       const started = Date.now();
+      const body = {
+        model,
+        temperature,
+        max_tokens: maxOutputTokens,
+        response_format: schema || schemaName === 'plan' || schemaName === 'intake' || schemaName === 'assistant' ? { type: 'json_object' } : undefined,
+        messages: [
+          { role: 'system', content: `${system}\nRespond with a single JSON object only — no prose, no code fences, no commentary outside the JSON.` },
+          { role: 'user', content: prompt }
+        ]
+      };
+      // Reasoning models burn completion tokens (and TPM quota) thinking before
+      // answering. These tasks are constrained JSON extraction, so low effort is
+      // the measured-cheaper choice: 338 reasoning tokens became 6.
+      const effort = reasoningEffort ?? (model.startsWith('openai/gpt-oss') ? 'low' : null);
+      if (effort) body.reasoning_effort = effort;
       const response = await fetch(`${resolveBase()}/chat/completions`, {
         method: 'POST',
         headers: headers(),
-        body: JSON.stringify({
-          model,
-          temperature,
-          max_tokens: maxOutputTokens,
-          response_format: schema || schemaName === 'plan' || schemaName === 'intake' || schemaName === 'assistant' ? { type: 'json_object' } : undefined,
-          messages: [
-            { role: 'system', content: `${system}\nRespond with a single JSON object only — no prose, no code fences, no commentary outside the JSON.` },
-            { role: 'user', content: prompt }
-          ]
-        }),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(timeoutMs)
       }).catch(error => {
         if (error.name === 'TimeoutError') throw new AIProviderError('timeout', `${label} did not answer within ${Math.round(timeoutMs / 1000)}s.`);
@@ -252,11 +262,26 @@ export function createOpenAICompatibleProvider({
       if (!response.ok) {
         const message = String(payload?.error?.message || '').slice(0, 200);
         if (response.status === 429) {
-          const retry = Number(response.headers.get('retry-after')) || null;
-          throw new AIProviderError('rate_limited', `${label} is rate-limiting this key (HTTP 429)${retry ? `; retry in ${retry}s` : ''}. ${message}`);
+          // Groq sends no retry-after header but states the wait in the body, so
+          // both are read: the UI can show a real countdown instead of a guess.
+          const retry = Number(response.headers.get('retry-after'))
+            || Number(String(message).match(/(?:retry|try again) in (\d+)\s*s/i)?.[1])
+            || null;
+          const error = new AIProviderError('rate_limited', `${label} is rate-limiting this key (HTTP 429)${retry ? `; retry in ${retry}s` : ''}. ${message}`, message);
+          error.retryAfterSeconds = retry;
+          throw error;
         }
         if (response.status === 401 || response.status === 403) throw new AIProviderError('no_credentials', `${label} refused the API key (HTTP ${response.status}).`);
-        if (response.status === 400) throw new AIProviderError('bad_request', `${label} rejected the request (HTTP 400): ${message}`);
+        if (response.status === 400) {
+          // Groq validates the JSON itself in json_object mode. When the model
+          // hits max_tokens mid-object the provider answers 400 "Failed to
+          // validate JSON" rather than returning a truncated body, so repeating
+          // the same request can never succeed — the caller must raise the cap.
+          if (/validat.*json|json.*validat|failed_generation/i.test(message)) {
+            throw new AIProviderError('truncated', `${label} could not produce complete JSON within ${maxOutputTokens} output tokens.`, message);
+          }
+          throw new AIProviderError('bad_request', `${label} rejected the request (HTTP 400): ${message}`);
+        }
         throw new AIProviderError('provider_error', `${label} returned HTTP ${response.status}.`);
       }
       const choice = payload?.choices?.[0];
