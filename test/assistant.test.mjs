@@ -224,9 +224,11 @@ test('assistant failure keeps the conversation and the plan exactly as they were
     assert.equal(chat.status, 503);
     assert.equal(chat.json.keepExistingData, true);
     assert.match(chat.json.error, /rate/i);
-    const reloaded = await call(`/api/events/${event.id}`);
-    assert.equal(reloaded.json.conversation.length, 0);
-    assert.equal(reloaded.json.budget, 800000);
+    const history = await call(`/api/events/${event.id}/assistant`);
+    assert.equal(history.json.conversation.length, 0, 'a failed turn must not write to the conversation');
+    const detail = await call(`/api/events/${event.id}`);
+    assert.equal(detail.json.budget, 800000);
+    assert.equal(detail.json.tasks.length, event.tasks.length);
   });
 });
 
@@ -240,7 +242,7 @@ test('conversation is capped so history cannot bloat the store or the prompt', a
       const chat = await call(`/api/events/${event.id}/assistant`, { method: 'POST', body: { message: `Progress check ${index}` } });
       assert.equal(chat.status, 200, JSON.stringify(chat.json));
     }
-    const reloaded = await call(`/api/events/${event.id}`);
+    const reloaded = await call(`/api/events/${event.id}/assistant`);
     assert.ok(reloaded.json.conversation.length <= 60, `stored ${reloaded.json.conversation.length} messages`);
     const sentPrompt = provider.calls.at(-1).prompt;
     const carried = (sentPrompt.match(/"role":/g) || []).length;

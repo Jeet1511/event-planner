@@ -56,13 +56,19 @@ function showDetail(next = view) {
   $('#page-title').textContent = current.name;
   $$('.tab').forEach(tab => tab.classList.toggle('active', tab.dataset.view === view));
   $$('.nav').forEach(node => node.classList.toggle('active', node.dataset.view === view));
-  if (view === 'assistant') loadProposals().finally(renderDetail);
+  if (view === 'assistant') Promise.all([loadProposals(), loadConversation()]).then(renderDetail);
   else renderDetail();
 }
 async function loadProposals() {
   if (!current) return;
   try { proposals = (await api(`/api/events/${current.id}/actions`)).proposals; }
   catch { proposals = []; }
+}
+/** History is fetched once per event, not on every render or mutation. */
+async function loadConversation() {
+  if (!current || Array.isArray(current.conversation)) return;
+  try { current.conversation = (await api(`/api/events/${current.id}/assistant`)).conversation || []; }
+  catch { current.conversation = []; }
 }
 async function refresh() {
   events = await api('/api/events');
@@ -110,15 +116,16 @@ function renderEvents() {
     return;
   }
   grid.innerHTML = events.map(event => {
-    const done = event.tasks.filter(task => task.status === 'completed').length;
-    const percent = event.tasks.length ? Math.round(done / event.tasks.length * 100) : 0;
+    const done = event.tasksCompleted ?? 0;
+    const total = event.taskCount ?? 0;
+    const percent = total ? Math.round(done / total * 100) : 0;
     const health = event.planHealth || {};
     return `<article class="event-card" data-event="${esc(event.id)}" tabindex="0" role="button" aria-label="Open ${esc(event.name)}">
       <div class="event-icon" aria-hidden="true">${event.type === 'wedding' ? '♧' : event.type === 'birthday' ? '✦' : '⌂'}</div>
       <h3>${esc(event.name)}</h3>
       <div class="card-meta">${esc(event.type)} · ${esc(event.city)} · ${dateText(event.date)}</div>
       <div class="progress-track"><span style="width:${Math.max(0, Math.min(100, percent))}%"></span></div>
-      <div class="card-foot"><span>${done}/${event.tasks.length} tasks${health.overSpent ? ' · over budget' : health.overdueTasks ? ` · ${health.overdueTasks} overdue` : ''}</span><b>${money(event.budget)}</b></div>
+      <div class="card-foot"><span>${done}/${total} tasks${health.overSpent ? ' · over budget' : health.overdueTasks ? ` · ${health.overdueTasks} overdue` : ''}</span><b>${money(event.budget)}</b></div>
       <div class="badge-row">${badge(event.planSource === 'ai-suggestion' ? 'AI plan' : 'Template plan')}${health.bookingRisk ? badge('Booking at risk', 'amber') : ''}</div>
     </article>`;
   }).join('');
@@ -380,10 +387,27 @@ function renderDetail() {
 }
 
 /* ───────────────────────────── wiring ───────────────────────────── */
+/**
+ * A mutation response already carries everything a card shows, so the list is
+ * patched in place instead of re-downloading every event after every checkbox.
+ */
+function mergeIntoList(event) {
+  const tasks = event.tasks || [];
+  const card = {
+    id: event.id, name: event.name, type: event.type, city: event.city, date: event.date,
+    budget: event.budget, currency: event.currency, guestsCount: event.guestsCount,
+    planSource: event.planSource, aiProvider: event.aiProvider,
+    taskCount: tasks.length, tasksCompleted: tasks.filter(task => task.status === 'completed').length,
+    summary: event.summary, planHealth: event.planHealth
+  };
+  const index = events.findIndex(item => item.id === event.id);
+  if (index >= 0) events[index] = card; else events.unshift(card);
+  renderEvents();
+}
 async function saveTo(url, payload, method = 'POST') {
   current = await api(url, { method, body: JSON.stringify(payload) });
   renderDetail();
-  await refreshList();
+  mergeIntoList(current);
   return current;
 }
 async function refreshList() { events = await api('/api/events'); renderEvents(); }
@@ -417,9 +441,10 @@ async function sendAssistant({ message = '', focus = null }) {
   try {
     const result = await api(`/api/events/${current.id}/assistant`, { method: 'POST', body: { message, focus } });
     current = result.event;
+    if (result.conversation) current.conversation = result.conversation;
     await loadProposals();
     renderDetail();
-    await refreshList();
+    mergeIntoList(current);
     if (result.proposal) notify(`Proposal ready: ${result.proposal.actions.length} change(s) awaiting your approval.`, 'ok');
     else if (result.screening?.blockers?.length) notify(`Your plan checks blocked the assistant's changes: ${result.screening.blockers.join(' ')} Nothing was applied.`, 'bad');
     else if (result.rejected?.length) notify('The assistant answered, but none of its proposed changes were applicable.', 'warn');
@@ -513,9 +538,10 @@ async function resolveProposal(actionId, decision) {
   try {
     const result = await api(`/api/events/${current.id}/actions/${actionId}/${decision}`, { method: 'POST', body: {} });
     current = result.event;
+    if (result.conversation) current.conversation = result.conversation;
     await loadProposals();
     renderDetail();
-    await refreshList();
+    mergeIntoList(current);
     const failed = (result.results || []).filter(item => !item.ok).length;
     notify(decision === 'approve'
       ? `Applied ${ (result.results || []).length - failed } change(s)${failed ? `, ${failed} could not be applied` : ''}.`

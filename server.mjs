@@ -1,13 +1,82 @@
 import http from 'node:http';
 import { readFile, writeFile, rename } from 'node:fs/promises';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, statSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { brotliCompressSync, gzipSync, deflateSync, constants as zlibConstants } from 'node:zlib';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { createPlan, validateEvent, validateExpense, calculateBudget, indiaDateToday } from './src/core.mjs';
 import { aiHealth, activeProvider, assistantTurn, cleanError, generatePlan, screenActions, understandBrief, validateAIProposal } from './src/ai.mjs';
-import { applyActions, analyzeImpact, budgetView, eventFingerprint, resolveSchedule, RUPEE, sharesToPaise } from './src/planning.mjs';
+import { applyActions, analyzeImpact, budgetView, eventFingerprint, plannedGuests, resolveSchedule, RUPEE, sharesToPaise } from './src/planning.mjs';
 import { assertSafeDeployment } from './src/deployment.mjs';
+
+const COMPRESS_MIN_BYTES = 860;
+
+/**
+ * Content negotiation for compression. Dynamic JSON uses gzip/deflate at a cheap
+ * level because the CPU has to be paid for on every request; static files are
+ * compressed once and cached, so they can afford Brotli's better ratio.
+ */
+function chooseEncoding(accept = '') {
+  if (/\bgzip\b/.test(accept)) return 'gzip';
+  if (/\bdeflate\b/.test(accept)) return 'deflate';
+  return null;
+}
+function compressDynamic(buffer, encoding) {
+  if (!encoding || buffer.length < COMPRESS_MIN_BYTES) return null;
+  const fast = buffer.length > 150_000;
+  return encoding === 'gzip'
+    ? gzipSync(buffer, { level: fast ? 1 : 6 })
+    : deflateSync(buffer, { level: fast ? 1 : 6 });
+}
+function compressStatic(buffer, accept) {
+  if (buffer.length < COMPRESS_MIN_BYTES) return { payload: buffer, encoding: null };
+  if (/\bbrotli\b/.test(accept)) {
+    return { payload: brotliCompressSync(buffer, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 9 } }), encoding: 'br' };
+  }
+  const encoding = chooseEncoding(accept);
+  return encoding ? { payload: compressDynamic(buffer, encoding), encoding } : { payload: buffer, encoding: null };
+}
+
+/**
+ * Static file cache: bytes are read from disk once per version, hashed into an
+ * ETag, and each encoding variant is compressed once. A changed file (size or
+ * mtime) invalidates the entry, so no stale asset can be served.
+ */
+function createStaticCache() {
+  const entries = new Map();
+  return {
+    get(filePath) {
+      let stats;
+      try { stats = statSync(filePath); } catch { return null; }
+      const signature = `${stats.size}:${stats.mtimeMs}`;
+      const existing = entries.get(filePath);
+      if (existing && existing.signature === signature) return existing;
+      const entry = {
+        signature,
+        raw: readFileSync(filePath),
+        etag: `"${createHash('sha1').update(`${filePath}|${signature}`).digest('base64url').slice(0, 24)}"`,
+        variants: new Map()
+      };
+      entries.set(filePath, entry);
+      if (entries.size > 40) entries.delete(entries.keys().next().value);
+      return entry;
+    }
+  };
+}
+
+function staticVariant(entry, accept) {
+  if (entry.raw.length < COMPRESS_MIN_BYTES) return { payload: entry.raw, encoding: null };
+  const wanted = /\bbrotli\b/.test(accept) ? 'br' : chooseEncoding(accept);
+  if (!wanted) return { payload: entry.raw, encoding: null };
+  if (!entry.variants.has(wanted)) {
+    entry.variants.set(wanted, wanted === 'br'
+      ? brotliCompressSync(entry.raw, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 9 } })
+      : compressDynamic(entry.raw, wanted));
+  }
+  return { payload: entry.variants.get(wanted), encoding: wanted };
+}
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, 'public');
@@ -34,16 +103,29 @@ function createStore({ dataDir, now = () => new Date() }) {
   mkdirSync(dataDir, { recursive: true });
   mkdirSync(uploadDir, { recursive: true });
   let chain = Promise.resolve();
+  let parsed = null;
   const state = { proposals: new Map(), actions: new Map() };
 
+  /**
+   * Parsed store is cached for the process lifetime and dropped the moment a
+   * write fails, so memory can never drift from the file it claims to hold.
+   */
   async function load() {
-    try { return JSON.parse(await readFile(db, 'utf8')); } catch { return []; }
+    if (parsed) return parsed;
+    try { parsed = JSON.parse(await readFile(db, 'utf8')); } catch { parsed = []; }
+    return parsed;
   }
   async function persist(data) {
     const serialized = `${JSON.stringify(data, null, 2)}\n`;
     const temporary = `${db}.${randomUUID()}.tmp`;
-    await writeFile(temporary, serialized, { flag: 'wx' });
-    await rename(temporary, db);
+    try {
+      await writeFile(temporary, serialized, { flag: 'wx' });
+      await rename(temporary, db);
+      parsed = data;
+    } catch (error) {
+      parsed = null;
+      throw error;
+    }
   }
   function enqueue(task) {
     const run = chain.then(task, task);
@@ -85,10 +167,32 @@ function planHealth(event) {
   };
 }
 
+/**
+ * The list endpoint sends only what a card renders. Previously every event's
+ * full task descriptions, strategies, risks and proposal payload went down the
+ * wire for a screen that shows a name, a date and a progress bar.
+ */
+function listEvent(event) {
+  const tasks = event.tasks || [];
+  const health = planHealth(event);
+  return {
+    id: event.id, name: event.name, type: event.type, city: event.city, date: event.date,
+    budget: event.budget, currency: event.currency || 'INR',
+    guestsCount: plannedGuests(event), guestsAdded: (event.guests || []).length,
+    planSource: event.planSource || 'template', aiProvider: event.aiProvider || null,
+    taskCount: tasks.length, tasksCompleted: tasks.filter(task => task.status === 'completed').length,
+    summary: calculateBudget(event),
+    planHealth: {
+      overSpent: health.overSpent, overAllocated: health.overAllocated, overdueTasks: health.overdueTasks,
+      remainingINR: health.remainingINR, daysToEvent: health.daysToEvent, bookingRisk: health.bookingRisk
+    }
+  };
+}
+
 function safeEvent(event, { list = false } = {}) {
-  const { conversation, aiProposal, ...rest } = event;
-  const base = { ...rest, summary: calculateBudget(event), planHealth: planHealth(event) };
-  return list ? base : { ...base, conversation: conversation || [], aiProposal: aiProposal || null };
+  if (list) return listEvent(event);
+  const { conversation, ...rest } = event;
+  return { ...rest, summary: calculateBudget(event), planHealth: planHealth(event) };
 }
 
 /** Turns a validated plan proposal into the shape createPlan returns. */
@@ -205,12 +309,18 @@ export function createApp({ dataDir, ai = null, now = () => new Date() } = {}) {
   const resolvedDataDir = dataDir ? path.resolve(dataDir) : path.join(ROOT, 'data');
   const store = createStore({ dataDir: resolvedDataDir, now });
   const providerOptions = ai || {};
-  const aiSlots = { active: 0, limit: Number(process.env.EVENTPILOT_AI_CONCURRENCY || 1), queue: [] };
+  const aiSlots = { active: 0, limit: Number(process.env.EVENTPILOT_AI_CONCURRENCY || 1), queue: [], maxQueue: 32 };
+  const staticCache = createStaticCache();
   const buckets = new Map();
 
   const send = (res, status, bodyValue) => {
-    res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...SECURITY_HEADERS });
-    res.end(JSON.stringify(bodyValue));
+    const buffer = Buffer.from(JSON.stringify(bodyValue));
+    const encoding = chooseEncoding(res.req?.headers['accept-encoding'] || '');
+    const payload = compressDynamic(buffer, encoding);
+    const headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'vary': 'Accept-Encoding', ...SECURITY_HEADERS };
+    if (payload) headers['content-encoding'] = encoding;
+    res.writeHead(status, headers);
+    res.end(payload || buffer);
   };
 
   async function readBody(req) {
@@ -240,6 +350,10 @@ export function createApp({ dataDir, ai = null, now = () => new Date() } = {}) {
    * store from being written by parallel model responses. */
   function withAiSlot(task) {
     return new Promise((resolve, reject) => {
+      if (aiSlots.queue.length >= aiSlots.maxQueue) {
+        reject(new HttpError(503, 'The AI queue is full. Try again in a moment — your saved data is unchanged.'));
+        return;
+      }
       const attempt = () => {
         if (aiSlots.active >= aiSlots.limit) { aiSlots.queue.push(attempt); return; }
         aiSlots.active += 1;
@@ -273,7 +387,9 @@ export function createApp({ dataDir, ai = null, now = () => new Date() } = {}) {
   async function eventById(id) {
     const event = (await store.load()).find(item => item.id === id);
     if (!event) throw new HttpError(404, 'Event not found.');
-    return event;
+    // Cloned: routes keep this as a pre-mutation snapshot for fingerprints and
+    // money previews, and the store now hands out a shared cached object.
+    return structuredClone(event);
   }
 
   async function uploadQuotationFile(input, vendor) {
@@ -458,7 +574,7 @@ export function createApp({ dataDir, ai = null, now = () => new Date() } = {}) {
           deterministicCheck: deterministicPreview(snapshot, accepted),
           expiresAt: new Date(now().getTime() + PROPOSAL_TTL_MS).toISOString()
         } : null,
-        event: safeEvent(updated.event)
+        event: safeEvent(updated.event), conversation: updated.event.conversation
       });
     },
 
@@ -684,6 +800,7 @@ export function createApp({ dataDir, ai = null, now = () => new Date() } = {}) {
             return send(res, 200, {
               status: outcome.status, results: outcome.results, changed: outcome.changed,
               rejected: outcome.rejected || [], event: safeEvent(outcome.event),
+              conversation: outcome.event.conversation,
               note: 'Applied changes are recorded on the event; source labels show which came from an accepted AI proposal.'
             });
           }
@@ -704,14 +821,17 @@ export function createApp({ dataDir, ai = null, now = () => new Date() } = {}) {
     if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, 'Method not allowed.');
     const requested = path.resolve(PUBLIC, `.${decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname)}`);
     if (!requested.startsWith(PUBLIC + path.sep) && requested !== path.join(PUBLIC, 'index.html')) throw new HttpError(403, 'Forbidden.');
-    try {
-      const file = await readFile(requested);
-      res.writeHead(200, {
-        'content-type': MIME[path.extname(requested)] || 'application/octet-stream',
-        'cache-control': 'no-cache', ...SECURITY_HEADERS
-      });
-      return res.end(file);
-    } catch { throw new HttpError(404, 'Not found.'); }
+    const entry = staticCache.get(requested);
+    if (!entry) throw new HttpError(404, 'Not found.');
+    const headers = {
+      'content-type': MIME[path.extname(requested)] || 'application/octet-stream',
+      'cache-control': 'max-age=0, must-revalidate', 'vary': 'Accept-Encoding', etag: entry.etag, ...SECURITY_HEADERS
+    };
+    if (req.headers['if-none-match'] === entry.etag) { res.writeHead(304, headers); return res.end(); }
+    const variant = staticVariant(entry, req.headers['accept-encoding'] || '');
+    if (variant.encoding) headers['content-encoding'] = variant.encoding;
+    res.writeHead(200, headers);
+    return res.end(variant.payload);
   }
 
   function sendResult(res, result, status = 200) {

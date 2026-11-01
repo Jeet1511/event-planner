@@ -8,7 +8,6 @@ import { indiaDateToday } from './core.mjs';
 import { createOllamaProvider, createGeminiProvider, createGroqProvider, createMockProvider, AIProviderError } from './ai-providers.mjs';
 import { eventForPrompt, normalizeAction, sharesToPaise, RUPEE } from './planning.mjs';
 
-export { validateAIProposal as validateAIProposalLegacy } from './ai-validate.mjs';
 export { validateAIProposal, validateExtraction, validateAssistantTurn } from './ai-validate.mjs';
 import { validateAIProposal, validateExtraction, validateAssistantTurn } from './ai-validate.mjs';
 
@@ -27,7 +26,7 @@ const text = (value, max = 500) => typeof value === 'string' ? value.trim().slic
 
 /** User and model text is data, never instructions: markup is defanged before
  * it is ever placed inside a prompt delimiter. */
-export function dataBlock(value) {
+function dataBlock(value) {
   return JSON.stringify(value)
     .replace(/[<>&]/g, character => ({ '<': '\\u003c', '>': '\\u003e', '&': '\\u0026' }[character]));
 }
@@ -145,10 +144,6 @@ export function activeProvider(options = {}) {
   if (process.env.GROQ_API_KEY) return createGroqProvider(options);
   if (process.env.GEMINI_API_KEY) return createGeminiProvider(options);
   return null;
-}
-
-export function providerNames() {
-  return ['groq', 'gemini', 'ollama', 'mock', 'none'];
 }
 
 async function safeHealth(provider) {
@@ -342,8 +337,3 @@ export function screenActions(event, actions) {
   return { accepted, rejected };
 }
 
-/** Budget shares to whole rupees, remainder left honestly unallocated. */
-export function allocationsFromShares(shares, totalINR) {
-  const paise = sharesToPaise(Math.round(Number(totalINR) * 100), shares.map(share => Number(share)));
-  return shares.map((share, index) => ({ ...share, allocationINR: RUPEE(paise[index]) }));
-}
