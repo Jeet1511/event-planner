@@ -181,6 +181,9 @@ function listEvent(event) {
     guestsCount: plannedGuests(event), guestsAdded: (event.guests || []).length,
     planSource: event.planSource || 'template', aiProvider: event.aiProvider || null,
     taskCount: tasks.length, tasksCompleted: tasks.filter(task => task.status === 'completed').length,
+    // Slim task view: enough to tick a task off straight from a card, without
+    // shipping every description for an event the user is not looking at.
+    taskBrief: tasks.map(task => ({ id: task.id, title: task.title, status: task.status, dueDate: task.dueDate, priority: task.priority })),
     summary: calculateBudget(event),
     planHealth: {
       overSpent: health.overSpent, overAllocated: health.overAllocated, overdueTasks: health.overdueTasks,
@@ -791,7 +794,7 @@ export function createApp({ dataDir, ai = null, now = () => new Date() } = {}) {
         if (req.method === 'PATCH' && !resource) return sendResult(res, await routes.patchEvent(req, res, { id, input: await readBody(req) }));
         if (resource === 'assistant') {
           if (req.method === 'POST' && !second) return routes.assistant(req, res, { id, input: await readBody(req) });
-          if (req.method === 'GET' && !second) return send(res, 200, { conversation: (await eventById(id)).conversation || [] });
+          if (req.method === 'GET' && !second) { const history = await eventById(id); return send(res, 200, { conversation: history.conversation || [] }); }
         }
         if (resource === 'actions') {
           if (req.method === 'GET' && !second) return routes.listActions(req, res, { id });

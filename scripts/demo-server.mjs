@@ -117,10 +117,18 @@ let turnIndex = 0;
 const scripted = {
   plan: PLAN,
   intake: EXTRACTION,
-  assistant: () => {
-    const turn = TURNS[turnIndex % TURNS.length];
+  // Keyword routing keeps the demo reproducible: the same question always gets the
+  // same proposal, instead of a rotating script that drifts out of sync with the chat.
+  assistant: prompt => {
+    // Route on the user message alone: the prompt also carries the entire event
+    // state, whose vendor categories ("Photography") would match these keywords.
+    const quoted = /latestUserMessage[\\"':]+([^"\\]+)/.exec(String(prompt || ''));
+    const text = quoted ? quoted[1] : String(prompt || '');
+    if (/cancel|photograph|no longer available/i.test(text)) return TURNS[2];
+    if (/guest|head count|invite more|more people/i.test(text)) return TURNS[1];
+    if (/budget|lakh|crore|cut|reduce|cheap|elegant/i.test(text)) return TURNS[0];
     turnIndex += 1;
-    return turn;
+    return GENERIC_TURN;
   }
 };
 
@@ -134,7 +142,7 @@ const demoProvider = {
   },
   async generate(request) {
     const schemaName = request.schemaName || 'plan';
-    const value = typeof scripted[schemaName] === 'function' ? scripted[schemaName]() : scripted[schemaName] || GENERIC_TURN;
+    const value = typeof scripted[schemaName] === 'function' ? scripted[schemaName](request.prompt) : scripted[schemaName] || GENERIC_TURN;
     return { content: JSON.stringify(value), model: 'eventpilot-demo-script', provider: 'mock', usage: {} };
   }
 };

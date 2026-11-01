@@ -398,6 +398,7 @@ function mergeIntoList(event) {
     budget: event.budget, currency: event.currency, guestsCount: event.guestsCount,
     planSource: event.planSource, aiProvider: event.aiProvider,
     taskCount: tasks.length, tasksCompleted: tasks.filter(task => task.status === 'completed').length,
+    taskBrief: tasks.map(task => ({ id: task.id, title: task.title, status: task.status, dueDate: task.dueDate, priority: task.priority })),
     summary: event.summary, planHealth: event.planHealth
   };
   const index = events.findIndex(item => item.id === event.id);
