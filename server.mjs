@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { readFile, writeFile, rename } from 'node:fs/promises';
 import { mkdirSync, statSync, readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { brotliCompressSync, gzipSync, deflateSync, constants as zlibConstants } from 'node:zlib';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { createPlan, validateEvent, validateExpense, calculateBudget, indiaDateToday } from './src/core.mjs';
 import { aiHealth, activeProvider, assistantTurn, cleanError, consultTurn, generatePlan, screenActions, understandBrief, validateAIProposal } from './src/ai.mjs';
 import { applyActions, analyzeImpact, budgetView, eventFingerprint, isoDate, plannedGuests, resolveSchedule, RUPEE, sharesToPaise } from './src/planning.mjs';
-import { assertSafeDeployment } from './src/deployment.mjs';
+import { assertSafeDeployment, readCookies, secretMatches } from './src/deployment.mjs';
 
 const COMPRESS_MIN_BYTES = 860;
 
@@ -91,6 +91,46 @@ const PROPOSAL_TTL_MS = 15 * 60 * 1000;
 
 class HttpError extends Error {
   constructor(status, message) { super(message); this.name = 'HttpError'; this.status = status; }
+}
+
+/**
+ * Workspace session. The cookie holds `nonce.hmac(nonce)` keyed by the workspace
+ * secret, so the secret itself never reaches the browser.
+ *
+ * Stateless tokens cannot normally be revoked, which would make "sign out"
+ * decorative — so revoked nonces are remembered for the remaining lifetime of a
+ * session. The map is bounded and swept, because an unbounded revocation list is
+ * just a memory leak with good intentions.
+ */
+const SESSION_COOKIE = 'eventpilot_session';
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const SESSION_REVOCATION_CAP = 5000;
+const sessionSign = (secret, nonce) => createHmac('sha256', secret).update(nonce).digest('hex');
+function issueSessionToken(secret) {
+  const nonce = randomBytes(16).toString('hex');
+  return `${nonce}.${sessionSign(secret, nonce)}`;
+}
+function sessionTokenParts(token) {
+  const [nonce, signature] = String(token || '').split('.');
+  if (!nonce || !signature || !/^[0-9a-f]{32}$/.test(nonce) || !/^[0-9a-f]{64}$/.test(signature)) return null;
+  return { nonce, signature };
+}
+function sessionValid(secret, token, revoked) {
+  const parts = sessionTokenParts(token);
+  if (!parts || revoked.has(parts.nonce)) return false;
+  const expected = Buffer.from(sessionSign(secret, parts.nonce), 'hex');
+  const given = Buffer.from(parts.signature, 'hex');
+  return expected.length === given.length && timingSafeEqual(expected, given);
+}
+function revokeSession(revoked, token, instant) {
+  const parts = sessionTokenParts(token);
+  if (!parts) return;
+  revoked.set(parts.nonce, instant + SESSION_TTL_MS);
+  for (const [nonce, expiresAt] of revoked) if (expiresAt <= instant) revoked.delete(nonce);
+  while (revoked.size > SESSION_REVOCATION_CAP) revoked.delete(revoked.keys().next().value);
+}
+function sessionCookie(token, { secure, maxAge = SESSION_TTL_MS / 1000 } = {}) {
+  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure ? '; Secure' : ''}`;
 }
 
 /**
@@ -339,13 +379,22 @@ function fallbackVendorRequirements(event) {
   }));
 }
 
-export function createApp({ dataDir, ai = null, now = () => new Date() } = {}) {
+export function createApp({ dataDir, ai = null, now = () => new Date(), store: injectedStore = null, accessKey = process.env.EVENTPILOT_ACCESS_KEY || '' } = {}) {
   const resolvedDataDir = dataDir ? path.resolve(dataDir) : path.join(ROOT, 'data');
-  const store = createStore({ dataDir: resolvedDataDir, now });
+  const store = injectedStore || createStore({ dataDir: resolvedDataDir, now });
   const providerOptions = ai || {};
+  // A workspace secret turns every API route into a keyed endpoint. Empty means
+  // "local demo": the deployment guard then refuses anything but loopback binding.
+  const workspaceSecret = String(accessKey || '').trim();
+  // Uploads are the one thing persistence does not cover yet: quotation files
+  // still go to the local disk, which is durable on a mounted volume and lost on
+  // an ephemeral filesystem. Recorded as a limit in DEPLOYMENT_RENDER.md.
+  const uploadDir = path.join(resolvedDataDir, 'private-uploads');
+  mkdirSync(uploadDir, { recursive: true });
   const aiSlots = { active: 0, limit: Number(process.env.EVENTPILOT_AI_CONCURRENCY || 1), queue: [], maxQueue: 32 };
   const staticCache = createStaticCache();
   const buckets = new Map();
+  const revokedSessions = new Map();
 
   const send = (res, status, bodyValue) => {
     const buffer = Buffer.from(JSON.stringify(bodyValue));
@@ -458,14 +507,14 @@ export function createApp({ dataDir, ai = null, now = () => new Date() } = {}) {
     if (!valid) throw new HttpError(400, 'File content does not match its declared type.');
     const extension = matched[1] === 'application/pdf' ? '.pdf' : matched[1] === 'image/jpeg' ? '.jpg' : '.png';
     const filename = `${randomUUID()}${extension}`;
-    await writeFile(path.join(store.uploadDir, filename), buffer, { flag: 'wx' });
+    await writeFile(path.join(uploadDir, filename), buffer, { flag: 'wx' });
     return { filename, mimeType: matched[1], size: buffer.length, vendorId: vendor.id };
   }
 
   const routes = {
     async health(req, res) {
       const ai = await aiHealth(providerOptions);
-      send(res, 200, { ok: true, mode: 'local-demo', ai, fallbackAvailable: true, eventCount: (await store.load()).length });
+      return { ok: true, mode: 'local-demo', ai, fallbackAvailable: true, eventCount: (await store.load()).length };
     },
 
     async understand(req, res) {
@@ -852,8 +901,35 @@ export function createApp({ dataDir, ai = null, now = () => new Date() } = {}) {
       if (origin && origin !== `http://${req.headers.host}`) throw new HttpError(403, 'Cross-origin write request blocked.');
       if (req.headers['content-type']?.split(';')[0] !== 'application/json') throw new HttpError(415, 'Write requests must use application/json.');
     }
+    const secureTransport = req.headers['x-forwarded-proto'] === 'https';
     if (url.pathname.startsWith('/api/')) {
-      if (req.method === 'GET' && url.pathname === '/api/health') return routes.health(req, res);
+      // Health stays reachable for platform probes, but it stops describing the
+      // workspace the moment the deployment is keyed.
+      if (req.method === 'GET' && url.pathname === '/api/health') {
+        const health = await routes.health(req, res);
+        if (workspaceSecret) delete health.eventCount;
+        return send(res, 200, health);
+      }
+      if (workspaceSecret) {
+        if (req.method === 'POST' && url.pathname === '/api/session') {
+          // Tighter than the AI budget: this is the only endpoint that gets to
+          // say whether the workspace secret is right, so guessing must be slow.
+          takeQuota(`${req.socket.remoteAddress}:session`, 5);
+          const input = await readBody(req);
+          if (!secretMatches(str(input.key, 200), workspaceSecret)) throw new HttpError(401, 'That workspace key is not correct.');
+          res.setHeader('set-cookie', sessionCookie(issueSessionToken(workspaceSecret), { secure: secureTransport }));
+          return send(res, 200, { ok: true });
+        }
+        if (req.method === 'DELETE' && url.pathname === '/api/session') {
+          revokeSession(revokedSessions, readCookies(req.headers.cookie || '')[SESSION_COOKIE], now().getTime());
+          res.setHeader('set-cookie', sessionCookie('', { secure: secureTransport, maxAge: 0 }));
+          return send(res, 200, { ok: true });
+        }
+        const bearer = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '')?.[1];
+        const authorized = secretMatches(bearer, workspaceSecret)
+          || sessionValid(workspaceSecret, readCookies(req.headers.cookie || '')[SESSION_COOKIE], revokedSessions);
+        if (!authorized) throw new HttpError(401, 'This workspace is locked. Enter the workspace key to continue.');
+      }
       if (req.method === 'GET' && url.pathname === '/api/events') return routes.listEvents(req, res);
       if (req.method === 'POST' && url.pathname === '/api/plan') return routes.plan(req, res);
       if (req.method === 'POST' && url.pathname === '/api/ai/understand') return routes.understand(req, res);
@@ -914,7 +990,7 @@ export function createApp({ dataDir, ai = null, now = () => new Date() } = {}) {
   }
 
   async function removeUpload(filename) {
-    try { const { unlink } = await import('node:fs/promises'); await unlink(path.join(store.uploadDir, filename)); } catch { /* already gone */ }
+    try { const { unlink } = await import('node:fs/promises'); await unlink(path.join(uploadDir, filename)); } catch { /* already gone */ }
   }
 
   const server = http.createServer((req, res) => {
@@ -932,8 +1008,16 @@ export function createApp({ dataDir, ai = null, now = () => new Date() } = {}) {
   return {
     server, store, dataDir: resolvedDataDir, aiSlots,
     listen(port = 0, host = process.env.HOST || '127.0.0.1') {
-      assertSafeDeployment({ nodeEnv: process.env.NODE_ENV || 'development', host });
-      return new Promise(resolve => server.listen(port, host, () => resolve(server.address())));
+      const decision = assertSafeDeployment({
+        nodeEnv: process.env.NODE_ENV || 'development',
+        host,
+        persistence: store.kind || 'file',
+        accessKey: workspaceSecret
+      });
+      return new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(port, host, () => resolve({ ...server.address(), ...decision }));
+      });
     },
     close() { return new Promise(resolve => server.close(resolve)); }
   };
@@ -957,7 +1041,22 @@ function loadEnvFile(rootDir = ROOT) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   loadEnvFile();
-  const app = createApp({ dataDir: process.env.EVENTPILOT_DATA_DIR ? path.resolve(process.env.EVENTPILOT_DATA_DIR) : path.join(ROOT, 'data') });
+  const { createDbStore } = await import('./src/db-store.mjs');
+  const restUrl = process.env.SUPABASE_REST_URL || '';
+  const restKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+  // Supabase is used when both halves of its REST endpoint are configured;
+  // otherwise the local file store keeps the development demo working.
+  const dataDir = process.env.EVENTPILOT_DATA_DIR ? path.resolve(process.env.EVENTPILOT_DATA_DIR) : path.join(ROOT, 'data');
+  const store = restUrl && restKey
+    ? createDbStore({ restUrl, restKey, table: process.env.SUPABASE_EVENTS_TABLE || 'events' })
+    : createStore({ dataDir });
+  // dataDir is passed even with the database store: quotation uploads still live
+  // on disk and must honour EVENTPILOT_DATA_DIR rather than the repository copy.
+  const app = createApp({ store, dataDir });
   const address = await app.listen(Number(process.env.PORT || 3000), process.env.HOST || '127.0.0.1');
-  console.log(`EventPilot AI local demo: http://${address.address}:${address.port}`);
+  if (store.ping) await store.ping();
+  const keyed = (process.env.EVENTPILOT_ACCESS_KEY || '').trim().length >= 16;
+  console.log(`EventPilot AI listening on http://${address.address}:${address.port}`);
+  console.log(`  persistence: ${store.kind || 'file'} · workspace key: ${keyed ? 'required' : 'not set (local demo)'}`);
+  if (!keyed) console.log('  bound to loopback only. Set EVENTPILOT_ACCESS_KEY and SUPABASE_* to run publicly.');
 }

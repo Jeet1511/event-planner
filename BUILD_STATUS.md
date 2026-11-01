@@ -1,9 +1,37 @@
 # EventPilot AI — Build Status
 
-**Build:** v5 — conversational planner that works before any event exists; redesigned type and
-information graphics; direction taken from the local `motionsites.ai` reference library
-**Target hosting:** Render (still blocked; see below)
-**Release decision:** NOT PRODUCTION READY — deployment intentionally blocked
+**Build:** v6 — production path opened safely: durable Supabase persistence + workspace access
+control, both verified; submission pack prepared
+**Target hosting:** Render + Supabase (see `DEPLOYMENT_RENDER.md`); not yet deployed
+**Release decision:** NOT DEPLOYED — no platform credentials exist in this environment
+
+## Verified in this environment (2026-11-01, v6)
+
+- `npm test`: **96 tests, 0 failures** under `TZ=UTC` and `TZ=Asia/Kolkata` (10 new store tests,
+  8 new access-control tests, 7 new deployment-gate tests).
+- **Production boot path verified end to end against a local fake PostgREST** (9/9,
+  `npm run verify:prod (scripts/verify-production.mjs)`): refuses to start without a ≥16-char workspace key and names what is
+  missing; boots when persistence + key are both set; every `/api` route answers 401 until the key is
+  exchanged for an `HttpOnly` `SameSite=Strict` session cookie that never contains the key; a write
+  in production mode lands in the database; **the event survives a full process restart**.
+- Diffed writes verified: a no-op mutation issues zero database writes, a single-field change
+  re-upserts exactly one row.
+- Browser regression after the security work: 10/10, zero console errors, composer text still
+  survives a tab switch. Live Groq still answering (plan 1.8 s, assistant turn 1.5 s).
+
+## Not verified, stated plainly
+
+- **No real Supabase project was contacted.** No credentials exist here, so
+  `db/migrations/001_events.sql` has never been executed and the RLS deny-by-default posture is
+  asserted by reading the SQL, not by running a query.
+- **No deployment exists.** No Render/Vercel account, token or CLI on this machine. `render.yaml`
+  describes a service; it is not evidence of one, and there is no live URL to submit.
+- **Hack2Skill submission not performed.** The dashboard 404s for an unauthenticated session and this
+  browser profile is logged out; I did not attempt to bypass that. Separately, all four listed
+  challenges are marked Concluded and none is an event-planning problem, so the target challenge
+  needs your confirmation before anything is submitted.
+- Access control is **one shared workspace key**, not user authentication: no accounts, no per-event
+  membership, no roles. Anyone holding the key sees every event.
 
 ## Verified in this environment (2026-11-01, v5)
 

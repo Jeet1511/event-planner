@@ -1,38 +1,72 @@
-# Render deployment target — implementation plan
+# Deployment — Supabase + Render
 
 ## Decision
 
-Render is the selected hosting platform. Supabase is not part of the target architecture.
+**Supabase Postgres** for persistence, **Render** for the web service, one platform for hosting.
 
-## Target topology
+The earlier plan in this file named Render PostgreSQL and excluded Supabase. That changed on
+instruction: Supabase is the intended store. The rest of the reasoning is unchanged — this is a
+long-lived Node HTTP process with an in-memory proposal queue, an AI concurrency slot and per-client
+rate buckets, so it wants one persistent service rather than request-scoped functions.
 
-- Render Web Service: Node.js HTTP application.
-- Render PostgreSQL: durable relational application data.
-- Private object storage: quotation files and other user uploads (use a dedicated S3-compatible provider or an appropriate managed storage service; do not rely on the web service's ephemeral filesystem).
-- AI adapter: Ollama for local development; optional Gemini provider only when configured by the operator. AI must remain non-authoritative and all generated changes require validation and user confirmation.
+Persistence talks to Supabase over **PostgREST** (`src/db-store.mjs`) instead of a Postgres driver,
+because the project still ships with zero dependencies and no build step.
 
-## Why this build cannot be deployed yet
+## What is implemented and verified
 
-The current application still reads and writes `data/events.json`, has no runtime authentication, and has no per-event authorization. Render web-service filesystems are ephemeral by default, and multiple instances cannot safely coordinate through a local JSON file. The application also deliberately rejects `NODE_ENV=production` and non-loopback binding. Do not remove that guard just to make deployment start.
+Verified against a local fake PostgREST (`npm run verify:prod (scripts/verify-production.mjs)`, 9/9) — the same technique
+`test/gemini.test.mjs` uses for the Gemini adapter:
 
-## Required implementation sequence
+- `NODE_ENV=production` boots **only** when durable persistence *and* a ≥16-character
+  `EVENTPILOT_ACCESS_KEY` are both configured; otherwise it exits with a message naming what is
+  missing. Non-loopback binding has the same precondition.
+- Every `/api` route answers **401** until the key is exchanged for an `HttpOnly`, `SameSite=Strict`,
+  7-day session cookie. `Set-Cookie` never contains the key — the cookie is `nonce.HMAC(nonce)`.
+- Revoked nonces are remembered (bounded, swept), so signing out actually ends the session instead
+  of only deleting the browser copy.
+- Key attempts are rate limited to 5/min per client.
+- `/api/health` stays reachable without a session for platform probes, and stops reporting
+  `eventCount` once the deployment is keyed.
+- Writes go to the database: one event created in production mode produced exactly one row.
+- **Data survives a full process restart** — the property the JSON file store could never promise on
+  Render's ephemeral filesystem.
+- Only changed rows are written (per-event digest diffing); a no-op mutation issues no write.
+- 96 automated tests, including 10 for the store and 8 for access control.
 
-1. Add PostgreSQL schema migrations and a small repository layer; enforce foreign keys, constraints, transactions and indexes.
-2. Implement authentication with a maintained password-hashing algorithm (Argon2id or scrypt), secure HttpOnly/Secure/SameSite cookies, CSRF protection for cookie-authenticated mutations, session rotation, logout and password-reset flow.
-3. Add event membership and role-based authorization. Every event-scoped API must derive the actor from the verified session and authorize access server-side; never trust a client-supplied owner ID or role.
-4. Move uploads to private object storage; validate file signatures and sizes, scan/quarantine files, and issue short-lived authorized download URLs.
-5. Add rate limits, security logging without secrets/PII, request timeouts, graceful shutdown, health/readiness checks and database connection management.
-6. Add integration tests against disposable PostgreSQL for anonymous, owner, editor, viewer and unrelated-user cases, plus migration rollback/recovery and concurrent writes.
-7. Add browser E2E, WCAG 2.2 AA audits, load/concurrency tests, backup/restore rehearsal and Windows checks.
-8. Only then add `render.yaml`, configure Render environment variables and deploy a staging service. Promote to production only after all six quality gates pass.
+## What is NOT done, and is not fakeable
 
-## Required Render configuration (future)
+1. **No real Supabase project has been contacted.** There are no `SUPABASE_*` credentials on this
+   machine, so the schema in `db/migrations/001_events.sql` has never been executed and the RLS
+   posture is asserted by reading the SQL, not by a query. Apply it in the Supabase SQL editor, then
+   re-run the journey against the live project.
+2. **No deployment exists.** There is no Render or Vercel account, token or CLI here. `render.yaml`
+   describes a service; it is not proof of one. Do not paste a made-up URL into the submission.
+3. **This is one shared workspace, not user authentication.** The access key gates the whole
+   deployment; there are no accounts, no per-event membership and no roles. Anyone with the key sees
+   every event. That is acceptable for a single-judge demo and unacceptable for a real product —
+   `db/migrations/001_events.sql` carries the commented `owner_id` + policy shape for the next step.
+4. **Quotation uploads are still on local disk.** They survive a restart on a mounted persistent
+   volume; on Render's free ephemeral filesystem they are lost. Object storage is not implemented.
+5. **No backup/restore rehearsal, no load testing, no screen-reader audit.**
 
-- Runtime: Node.js supported LTS.
-- Build command: `npm ci` (after production dependencies are introduced and lockfile is verified).
-- Start command: `npm start`.
-- Bind host: `0.0.0.0` and use Render's injected `PORT` only after the production guard is replaced by completed controls.
-- Database URL: store as a secret environment variable; never commit credentials.
-- Migrations: run as a controlled release/pre-deploy step, not automatically on every web process boot.
+## Environment contract
 
-No Render Blueprint is included yet because it would give the false impression that this unauthenticated JSON-backed prototype is safe to deploy.
+| Variable | Required for public deploy | Notes |
+| --- | --- | --- |
+| `NODE_ENV` | yes | `production` |
+| `HOST` | yes | `0.0.0.0` on Render |
+| `PORT` | yes | injected by the platform |
+| `SUPABASE_REST_URL` | yes | `https://<ref>.supabase.co/rest/v1` |
+| `SUPABASE_SERVICE_ROLE_KEY` | yes | bypasses RLS — server-side only, never in the bundle or a log |
+| `EVENTPILOT_ACCESS_KEY` | yes | ≥16 chars; gates every API route |
+| `GROQ_API_KEY` | for live AI | free tier is ~8,000 tokens/min; one plan call is ~1,450 |
+| `EVENTPILOT_AI_PROVIDER` | no | `auto` = Groq → Gemini → deterministic templates |
+
+## Release order
+
+1. Create the Supabase project, run `db/migrations/001_events.sql`, confirm `select` from `anon` is
+   denied in the SQL editor.
+2. Create the Render web service from `render.yaml`, fill the four `sync: false` secrets.
+3. Open the live URL, verify the lock screen appears, unlock with the key, create an event,
+   **restart the service** and confirm the event is still there.
+4. Only then treat the URL as submission material.

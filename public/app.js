@@ -41,9 +41,16 @@ async function api(url, options = {}) {
     const error = new Error(result.error || `Request failed (${response.status}).`);
     error.payload = result;
     error.status = response.status;
+    // A keyed deployment answers 401 for everything except health; ask for the
+    // workspace key once instead of showing a blank workspace.
+    if (response.status === 401 && !url.startsWith('/api/session')) requireWorkspace();
     throw error;
   }
   return result;
+}
+function requireWorkspace() {
+  if (activeBackdrop) return;
+  openDialog($('#lock-backdrop'));
 }
 function notify(message, tone = 'info') {
   const el = $('#toast');
@@ -1045,6 +1052,26 @@ $$('.rail-btn').forEach(button => button.addEventListener('click', () => {
   else notify('Create or open an event first.', 'warn');
 }));
 $$('.tab').forEach(button => button.addEventListener('click', () => showDetail(button.dataset.view)));
+
+$('#lock-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const status = $('#lock-status');
+  const key = new FormData(form).get('key');
+  status.textContent = 'Checking…';
+  try {
+    await api('/api/session', { method: 'POST', body: { key } });
+    form.reset();
+    status.textContent = '';
+    closeDialog();
+    await refresh();
+    refreshAIHealth();
+    renderChat();
+    notify('Workspace unlocked.', 'ok');
+  } catch (error) {
+    status.textContent = error.message;
+  }
+});
 
 try { await refresh(); } catch (error) { notify(`Could not load local data: ${error.message}`, 'bad'); }
 refreshAIHealth();

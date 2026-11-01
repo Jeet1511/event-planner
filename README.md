@@ -91,9 +91,12 @@ reviewed before saving, and assistant changes are applied only after you approve
 - [x] Review-and-confirm step before saving a newly generated plan
 - [x] Responsive dashboard, keyboard flows, labelled controls, reduced-motion support
 - [x] Node built-in unit, integration, AI-contract and performance tests
-- [ ] Authentication and multi-user roles in running prototype (critical blocker)
-- [ ] Render PostgreSQL integration, application authentication and tenant authorization
-- [ ] Secure cloud document storage and malware scanning
+- [x] Durable Supabase Postgres persistence (verified against a fake PostgREST; data survives a restart)
+- [x] Workspace access key gating every API route, with revocable HttpOnly sessions
+- [ ] Per-user accounts, event membership and roles — one shared key today, so anyone with the key
+      sees every event (critical blocker for a real product, acceptable for a single demo)
+- [ ] Real Supabase project exercised (no credentials here; the migration has never been executed)
+- [ ] Secure cloud object storage and malware scanning for quotation uploads
 - [ ] Email invitations/reminders
 - [ ] Live vendor discovery or booking
 - [ ] Calendar drag/drop and notifications
@@ -194,9 +197,18 @@ A real cost reduction, not a cosmetic one: the same minute now fits about five g
 of two, which is the difference between a chat that answers and a chat that silently falls back to
 templates.
 
-## Deployment target: Render
+## Deployment
 
-Render is the selected hosting platform. See [`DEPLOYMENT_RENDER.md`](DEPLOYMENT_RENDER.md) for the target architecture and release blockers. Do not deploy this build publicly: it deliberately refuses production startup and non-loopback binding until authentication, tenant authorization and PostgreSQL persistence are implemented.
+See [`DEPLOYMENT_RENDER.md`](DEPLOYMENT_RENDER.md) for the Supabase + Render target, the environment
+contract and the release order. The startup guard is conditional now: `NODE_ENV=production` and a
+non-loopback bind are allowed **only** when durable persistence and `EVENTPILOT_ACCESS_KEY` (≥16
+characters) are both configured, and every API route then answers 401 until that key is exchanged
+for an HttpOnly session cookie. An incomplete deployment fails at boot instead of coming up as a
+public, unauthenticated database of other people's events.
+
+Not deployed: no Render, Vercel or Supabase credentials exist in this environment. The production
+path is verified against a local fake PostgREST (`npm run verify:prod (scripts/verify-production.mjs)`, 9/9), including data
+surviving a process restart — that is not the same as a live URL, and none is claimed.
 
 ## Repository reuse decision
 

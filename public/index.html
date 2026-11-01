@@ -180,6 +180,18 @@
     </div>
   </div>
 
+  <div class="backdrop hidden" id="lock-backdrop">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="lock-title">
+      <div class="modal-head"><div><div class="crumb">Workspace locked</div><h2 id="lock-title">Enter the workspace key</h2></div></div>
+      <p class="muted" style="margin-bottom:var(--space-4)">This deployment stores real event plans, so every read and write needs the key the operator set. It is kept in an HttpOnly cookie on this site.</p>
+      <form id="lock-form">
+        <label class="field-label">Workspace key<input name="key" type="password" autocomplete="current-password" required maxlength="200"></label>
+        <p class="form-note" id="lock-status" role="status" aria-live="polite"></p>
+        <button type="submit" class="button primary">Unlock</button>
+      </form>
+    </div>
+  </div>
+
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <script type="module" src="/app.js"></script>
 </body></html>

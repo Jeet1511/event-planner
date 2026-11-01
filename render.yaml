@@ -1,0 +1,60 @@
+# Render Blueprint — EventPilot AI
+#
+# This file describes a deployment; it is not proof that one exists. Nothing here
+# has been applied to a Render account, because no Render credentials are
+# configured in this environment. Do not treat its presence as a live URL.
+#
+# Why Render and not Vercel for this app: the server is a long-lived Node HTTP
+# process with an in-memory proposal queue, an AI concurrency slot and a bounded
+# request-rate bucket. Vercel's request-scoped functions would discard all three
+# between invocations, so approval-gated proposals would expire at random. One
+# persistent service keeps the behaviour that the tests already assert.
+
+services:
+  - type: web
+    name: eventpilot-ai
+    runtime: node
+    plan: free
+    region: singapore
+    # The app has no dependencies to install; the check is the build step, so a
+    # syntax or module-graph regression fails the deploy instead of the first
+    # visitor's request.
+    buildCommand: npm ci --omit=dev && npm run check
+    startCommand: node server.mjs
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Render injects PORT; the app reads it and binds 0.0.0.0 here. The startup
+      # guard only allows a non-loopback bind when BOTH the database and the
+      # workspace key below are configured, so an incomplete deploy fails loudly.
+      - key: HOST
+        value: 0.0.0.0
+      - key: EVENTPILOT_AI_PROVIDER
+        value: auto
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-20b
+      - key: SUPABASE_EVENTS_TABLE
+        value: events
+      # Secrets: set these in the Render dashboard, never commit them.
+      # GROQ_API_KEY            — provider key, server-side only.
+      # SUPABASE_REST_URL       — https://<project>.supabase.co/rest/v1
+      # SUPABASE_SERVICE_ROLE_KEY — bypasses RLS. Server-side only. Must never
+      #                           reach the browser bundle or any log line.
+      # EVENTPILOT_ACCESS_KEY   — >= 16 characters. Gates every API route; the
+      #                           browser receives an HMAC session cookie, never
+      #                           this value.
+      - key: GROQ_API_KEY
+        sync: false
+      - key: SUPABASE_REST_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: EVENTPILOT_ACCESS_KEY
+        sync: false
+
+databases:
+  - name: eventpilot-data
+    databaseName: eventpilot
+    plan: free
+    ipAllowList: []   # Render-internal access only
