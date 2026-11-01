@@ -1,8 +1,26 @@
 # EventPilot AI — Build Status
 
-**Build:** v4 — Groq-backed planning assistant in a permanent right-hand rail; AI token cost halved
+**Build:** v5 — conversational planner that works before any event exists; redesigned type and
+information graphics; direction taken from the local `motionsites.ai` reference library
 **Target hosting:** Render (still blocked; see below)
 **Release decision:** NOT PRODUCTION READY — deployment intentionally blocked
+
+## Verified in this environment (2026-11-01, v5)
+
+- `npm test`: **73 tests, 0 failures** under `TZ=UTC` and `TZ=Asia/Kolkata`; `npm run check` clean.
+- **Live free-text creation, real Groq, no mocks.** *"Birthday party for my younger brother, around
+  30 people, I don't want to spend too much"* → city, budget and a cricket preference added on the
+  second turn → *"actually make it 45 people and 55 thousand"* honoured as a correction (guests 45,
+  budget ₹55,000, everything earlier retained). Readiness flipped only when the application's own
+  check passed, and the plan then generated from that draft (7 tasks, `groq-structured`).
+- **Live revision in the new voice:** *"we can stretch to 60 thousand, make it more fun for kids"* →
+  four reallocations plus `add_tasks`, with prose that agrees with the proposed numbers.
+- Browser pass at 1440×900, 834×1112 and 390×844: 11/11 checks, zero console errors, zero failed
+  requests, zero horizontal overflow at every width. Measured: no rendered text below 13px, every
+  touch target ≥24px (WCAG 2.2 SC 2.5.8), contrast across 20 element classes all ≥4.70:1, 14/14 tab
+  stops showing a focus ring.
+- Client is 24 KB Brotli in total (`app.js` 17.2 KB + `styles.css` 6.8 KB), still zero dependencies
+  and still one request each.
 
 ## Verified in this environment (2026-11-01, v4)
 
@@ -65,6 +83,13 @@
 
 ## Not implemented / not verified
 
+- **v5 voice is improved but not uniform.** With the register example and the explicit "do not list
+  the numbers back" rule, most replies read like a person; gpt-oss-20b still occasionally opens with
+  "We've updated the guest count to…" — a tone slip, not a correctness failure, and it costs a second
+  prompt pass to chase. Not fixed by a validator because prose style is not a data contract.
+- **v5 pre-event conversation is held in the browser tab.** `plannerHistory` and the draft live
+  client-side so the server stays stateless; reloading the landing loses the thread. Persisting it
+  would need a draft record in the store, which is a schema change rather than a small one.
 - **No authentication, no per-event authorization, no tenant isolation.** Loopback binding and the
   production-startup refusal are still enforced by `src/deployment.mjs`. Do not expose this build.
 - Render PostgreSQL, migrations, private object storage and malware scanning are not implemented.

@@ -129,7 +129,13 @@ test('static assets are compressed once and revalidated with an ETag', async t =
   assert.equal(revalidated.status, 304, 'an unchanged asset must not be re-downloaded');
   assert.equal(revalidated.bytes, 0);
   const styles = await rawGet(`${base}/styles.css`, { 'accept-encoding': 'gzip, br' });
-  assert.ok(styles.bytes < 6_000, `compressed styles.css should be under 6 KB, got ${styles.bytes}`);
+  // Budgets, not vibes. The v5 redesign added a landing screen, a conversational
+  // intake, hand-written SVG graphics and a fourth breakpoint, so the old 6 KB
+  // stylesheet ceiling no longer described this app. The per-file ceilings are
+  // now paired with a COMBINED one: growth in either file has to be paid for out
+  // of the other, which is the discipline that actually matters.
+  assert.ok(styles.bytes < 8_000, `compressed styles.css should be under 8 KB, got ${styles.bytes}`);
+  assert.ok(styles.bytes + script.bytes < 32_000, `the whole client should stay under 32 KB compressed, got ${styles.bytes + script.bytes}`);
   const identity = await rawGet(`${base}/app.js`);
   assert.equal(identity.headers['content-encoding'], undefined);
   assert.equal(identity.headers.etag, etag, 'the ETag is stable across encodings');

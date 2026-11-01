@@ -2,30 +2,30 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#17211d"><meta name="description" content="Describe a wedding, birthday or community event in your own words and get an AI-generated, editable plan with budgets, timelines, vendors and a planner that adapts as things change.">
-  <title>EventPilot AI — Event workspace</title><link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="stylesheet" href="/styles.css">
+  <meta name="theme-color" content="#16211c"><meta name="description" content="Describe a wedding, birthday or community event in your own words and get an AI-generated, editable plan with budgets, timelines, vendors and a planner that adapts as things change.">
+  <title>EventPilot AI — plan an event by talking it through</title><link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to main content</a>
   <div class="shell">
     <nav class="rail" aria-label="Workspace sections">
       <span class="rail-mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6L5.6 18.4"/></svg>
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6L5.6 18.4"/></svg>
       </span>
-      <button class="rail-btn active" data-view="overview" aria-label="Overview" title="Overview">
-        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.4"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.4"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.4"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.4"/></svg>
+      <button class="rail-btn active" data-view="overview" data-tip="Overview" aria-label="Overview">
+        <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.4"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.4"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.4"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.4"/></svg>
       </button>
-      <button class="rail-btn" data-view="budget" aria-label="Budget" title="Budget">
-        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M9 8h6M9 11h6M12.5 8c1.8 0 2.8 1.2 2.8 2.6 0 1.7-1.4 2.9-3.3 2.9H9.5l4.8 4.5"/></svg>
+      <button class="rail-btn" data-view="budget" data-tip="Budget" aria-label="Budget">
+        <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M9 8h6M9 11h6M12.5 8c1.8 0 2.8 1.2 2.8 2.6 0 1.7-1.4 2.9-3.3 2.9H9.5l4.8 4.5"/></svg>
       </button>
-      <button class="rail-btn" data-view="timeline" aria-label="Timeline and tasks" title="Timeline &amp; tasks">
-        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4M8 13.5h5M8 16.5h8"/></svg>
+      <button class="rail-btn" data-view="timeline" data-tip="Timeline &amp; tasks" aria-label="Timeline and tasks">
+        <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4M8 13.5h5M8 16.5h8"/></svg>
       </button>
-      <button class="rail-btn" data-view="vendors" aria-label="Vendors and quotes" title="Vendors &amp; quotes">
-        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 9.5 5.6 4.5h12.8L20 9.5M4 9.5h16M4 9.5v10h16v-10M9.5 19.5v-6h5v6"/></svg>
+      <button class="rail-btn" data-view="vendors" data-tip="Vendors &amp; quotes" aria-label="Vendors and quotes">
+        <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 9.5 5.6 4.5h12.8L20 9.5M4 9.5h16M4 9.5v10h16v-10M9.5 19.5v-6h5v6"/></svg>
       </button>
-      <button class="rail-btn" data-view="guests" aria-label="Guest list" title="Guest list">
-        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19c.6-3.4 2.8-5.2 5.5-5.2s4.9 1.8 5.5 5.2M15.5 6.2a3.2 3.2 0 0 1 0 5.6M17.5 14.2c2 .7 3.2 2.4 3.6 4.8"/></svg>
+      <button class="rail-btn" data-view="guests" data-tip="Guest list" aria-label="Guest list">
+        <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19c.6-3.4 2.8-5.2 5.5-5.2s4.9 1.8 5.5 5.2M15.5 6.2a3.2 3.2 0 0 1 0 5.6M17.5 14.2c2 .7 3.2 2.4 3.6 4.8"/></svg>
       </button>
       <div class="rail-foot">
         <div class="ai-dot" id="ai-status" role="status" aria-live="polite" title="Checking AI runtime…"><i aria-hidden="true"></i><span class="sr-only">Checking AI runtime…</span></div>
@@ -33,12 +33,12 @@
     </nav>
 
     <main class="stage" id="main-content">
-      <header class="stage-head">
+      <header class="stage-head landing-mode">
         <div class="stage-title">
           <button class="back-link hidden" id="back-events">All events</button>
           <div>
-            <div class="crumb" id="event-meta">Your events</div>
-            <h1 id="page-title">Your events</h1>
+            <div class="crumb" id="event-meta">Event workspace · India</div>
+            <h1 id="page-title">What are we planning?</h1>
             <p class="stage-sub hidden" id="event-subtitle"></p>
           </div>
         </div>
@@ -50,21 +50,40 @@
       </header>
 
       <section id="event-list-view" class="view">
-        <div class="hero">
-          <div class="hero-copy">
-            <h2>Describe the event. The plan follows.</h2>
-            <p>Tell your planner the budget, the people and the preferences in plain words. It extracts the brief, builds a structured plan in rupees and real dates, and re-plans with you when circumstances change.</p>
-            <button class="button primary big" id="hero-create">Start from a description</button>
+        <div class="landing">
+          <div class="landing-open">
+            <div>
+              <p class="answer">Say it the way you would to a friend — the people, the money, the date, what matters most. Your planner turns that into a budget in paise, a timeline with real deadlines, vendor categories with lead times, and a plan you can change by saying so.</p>
+              <div class="landing-cta">
+                <button class="button primary big" id="hero-create">Start the conversation</button>
+                <button class="button secondary" id="manual-create">Enter details instead</button>
+                <span class="hint">Nothing is saved until you say so.</span>
+              </div>
+            </div>
+            <div class="ledger hidden" id="ledger" aria-label="Your planning numbers"></div>
           </div>
-          <div class="hero-ledger" aria-hidden="true">
-            <span class="ledger-row"><i>Venue</i><b>₹3,06,000</b></span>
-            <span class="ledger-row"><i>Catering</i><b>₹6,12,000</b></span>
-            <span class="ledger-row"><i>Photography</i><b>₹1,62,000</b></span>
-            <span class="ledger-total"><i>Total, computed here</i><b>₹18,00,000</b></span>
+
+          <div class="panel hidden" id="splits-panel" aria-label="Where the money is planned">
+            <div class="panel-head"><div><h3>Where the money is planned</h3><div class="panel-sub">Allocations across every event in this workspace, combined by category.</div></div><span class="badge plain">Your own entries</span></div>
+            <div class="splits" id="splits"></div>
+          </div>
+
+          <div id="events-wrap" class="hidden">
+            <div class="events-head"><h3>Your events</h3><span class="muted" id="event-count">0 events</span></div>
+            <div id="events-grid" class="events-grid"></div>
+          </div>
+
+          <div class="empty-card hidden" id="landing-empty">
+            <h4>No events here yet</h4>
+            <p>Start typing in the planner on the right — one sentence is enough to get a first plan.</p>
+            <ul class="capabilities">
+              <li>Budget split by category, reconciled to the exact paisa</li>
+              <li>Deadlines counted back from the date, dependency-aware</li>
+              <li>Vendor categories with lead times — never invented names or prices</li>
+              <li>Change your mind in plain words; the plan adapts, you approve</li>
+            </ul>
           </div>
         </div>
-        <div class="section-head"><h2>Recent events</h2><span class="muted" id="event-count">0 events</span></div>
-        <div id="events-grid" class="events-grid"></div>
       </section>
 
       <section id="detail-view" class="view hidden" aria-labelledby="page-title">
@@ -84,25 +103,32 @@
       <div class="planner-head">
         <div>
           <h2>Your planner</h2>
-          <p id="planner-sub">Reads this event’s live plan. Nothing changes until you approve it.</p>
+          <p id="planner-sub">Talk it through in your own words. Nothing changes until you approve it.</p>
         </div>
         <button class="planner-close" id="planner-close" aria-label="Close the planner panel">Done</button>
       </div>
-      <div class="planner-body" id="planner-body">
-        <div class="chat-empty" id="chat-empty">
-          <p><b>Open an event</b> and your planner joins the conversation with its full plan in context.</p>
+      <div class="planner-body">
+        <div class="chat-intro" id="chat-intro">
+          <h3>Start with one sentence.</h3>
+          <p>Something like: <em>“Birthday party for my younger brother, around 30 people, and I don’t want to spend too much.”</em></p>
+          <ol class="steps">
+            <li>You talk. It keeps the people, the money, the date.</li>
+            <li>When enough is known, it drafts a plan you can read.</li>
+            <li>You approve every change before it lands.</li>
+          </ol>
         </div>
         <div class="chat-scroll hidden" id="chat-scroll">
           <div class="chat-error hidden" id="chat-error" role="alert"></div>
           <div class="transcript" id="transcript" aria-live="polite" aria-relevant="additions"></div>
+          <div id="chat-draft"></div>
           <div id="chat-proposals"></div>
         </div>
       </div>
-      <div class="planner-foot hidden" id="planner-foot">
+      <div class="planner-foot">
         <div class="quick-prompts" id="quick-prompts"></div>
         <form class="composer" id="assistant-form">
-          <label class="sr-only" for="assistant-input">Message the planning assistant</label>
-          <textarea id="assistant-input" name="message" rows="2" maxlength="3000" placeholder="Ask about this event, or describe a change…"></textarea>
+          <label class="sr-only" for="assistant-input">Message the planner</label>
+          <textarea id="assistant-input" name="message" rows="3" maxlength="3000" placeholder="Describe the event, or ask for a change…"></textarea>
           <div class="composer-row">
             <span class="composer-hint">Enter sends · Shift+Enter adds a line</span>
             <button class="button primary" type="submit" id="assistant-send">Send</button>
@@ -112,7 +138,7 @@
     </aside>
   </div>
 
-  <button class="planner-fab hidden" id="planner-fab" aria-controls="planner-body" aria-expanded="false">Ask your planner</button>
+  <button class="planner-fab hidden" id="planner-fab" aria-controls="chat-scroll" aria-expanded="false">Ask your planner</button>
 
   <div class="backdrop hidden" id="create-backdrop">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="create-title">

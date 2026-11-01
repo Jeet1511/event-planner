@@ -1,11 +1,13 @@
 /**
  * EventPilot AI — browser client. No framework, no build step.
  *
- * The workspace is three columns: an icon rail, the plan itself, and a planner
- * rail that is always present. The composer and the rail chrome live in
- * index.html and are wired once, so sending a message never rebuilds the form
- * you are typing in; only the transcript, the pending proposals and the error
- * banner are re-rendered.
+ * Three zones: an icon rail, the plan, and a planner rail that is always
+ * present. The planner works before an event exists — you can open the page and
+ * just start typing — and it keeps working after, with the live plan in context.
+ *
+ * The composer and rail chrome are static DOM wired once, so a re-render never
+ * eats a half-typed message; only the transcript, draft card, proposals and the
+ * error banner are re-rendered.
  *
  * Every value interpolated into markup goes through esc().
  */
@@ -17,13 +19,16 @@ const esc = (value = '') => String(value).replace(/[&<>"']/g, character => ({ '&
 
 let events = [], current = null, view = 'overview', toastTimer;
 let dialogReturnFocus = null, activeBackdrop = null;
-let draft = null;          // AI extraction awaiting confirmation
+let draft = null;          // AI extraction awaiting confirmation (manual dialog path)
 let pendingPlan = null;    // generated plan awaiting review
 let assistantBusy = false;
 let proposals = [];        // live AI proposals for the open event
 let chatError = null;      // last AI failure, shown in the planner rail
 let lastRequest = null;    // { message, focus } so a failed turn can be retried
 let countdownTimer = null;
+let plannerHistory = [];   // pre-event conversation, held here so the server stays stateless
+let plannerDraft = null;   // fields the planner has understood so far
+let plannerReady = false;
 
 $('#today').textContent = new Intl.DateTimeFormat('en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' }).format(new Date());
 
@@ -45,7 +50,7 @@ function notify(message, tone = 'info') {
   el.textContent = message;
   el.className = `toast show ${tone}`;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), 4200);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 4600);
 }
 
 /* ───────────────────────────── navigation ───────────────────────────── */
@@ -53,13 +58,14 @@ function showList() {
   current = null; draft = null; chatError = null;
   $('#event-list-view').classList.remove('hidden');
   $('#detail-view').classList.add('hidden');
-  $('#page-title').textContent = 'Your events';
+  $('#page-title').textContent = 'What are we planning?';
   $('#event-meta').textContent = 'Event workspace · India';
   $('#event-subtitle').classList.add('hidden');
   $('#back-events').classList.add('hidden');
   $('#edit-event').classList.add('hidden');
+  $('.stage-head').classList.add('landing-mode');
   $$('.rail-btn').forEach(node => node.classList.toggle('active', node.dataset.view === 'overview'));
-  renderEvents();
+  renderLanding();
   renderChat();
 }
 function showDetail(next = view) {
@@ -73,6 +79,7 @@ function showDetail(next = view) {
   $('#event-subtitle').classList.remove('hidden');
   $('#back-events').classList.remove('hidden');
   $('#edit-event').classList.remove('hidden');
+  $('.stage-head').classList.remove('landing-mode');
   $$('.tab').forEach(tab => tab.classList.toggle('active', tab.dataset.view === view));
   $$('.rail-btn').forEach(node => node.classList.toggle('active', node.dataset.view === view));
   renderDetail();
@@ -91,7 +98,7 @@ async function loadConversation() {
 }
 async function refresh() {
   events = await api('/api/events');
-  renderEvents();
+  renderLanding();
   if (current) {
     const found = events.find(event => event.id === current.id);
     if (!found) return showList();
@@ -134,24 +141,59 @@ async function openEvent(id) {
   showDetail('overview');
 }
 
-/* ───────────────────────────── event list ───────────────────────────── */
-function renderEvents() {
+/* ───────────────────────────── landing ───────────────────────────── */
+/** Real totals from the workspace, never sample data. */
+function aggregate() {
+  const budget = events.reduce((sum, event) => sum + (Number(event.budget) || 0), 0);
+  const tasks = events.reduce((sum, event) => sum + (event.taskCount || 0), 0);
+  const done = events.reduce((sum, event) => sum + (event.tasksCompleted || 0), 0);
+  const guests = events.reduce((sum, event) => sum + (event.guestsCount || 0), 0);
+  const soonest = events.map(event => event.date).filter(Boolean).sort()[0] || null;
+  const days = soonest ? Math.max(0, Math.round((new Date(`${soonest}T12:00:00+05:30`) - new Date()) / 86_400_000)) : null;
+  const byCategory = new Map();
+  events.forEach(event => (event.categoryBrief || []).forEach(category => {
+    byCategory.set(category.name, (byCategory.get(category.name) || 0) + Number(category.allocation || 0));
+  }));
+  const splits = [...byCategory.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
+  return { budget, tasks, done, guests, soonest, days, splits, total: splits.reduce((sum, [, value]) => sum + value, 0) };
+}
+function renderLanding() {
   const grid = $('#events-grid');
   $('#event-count').textContent = `${events.length} event${events.length === 1 ? '' : 's'}`;
-  if (!events.length) {
-    grid.innerHTML = '<div class="empty-card"><h3>No events yet</h3><p>Describe an event in plain words and your planner builds the first plan.</p></div>';
-    return;
+  $('#events-wrap').classList.toggle('hidden', !events.length);
+  $('#landing-empty').classList.toggle('hidden', events.length > 0);
+  const stats = aggregate();
+  const ledger = $('#ledger');
+  ledger.classList.toggle('hidden', !events.length);
+  if (events.length) {
+    ledger.innerHTML = [
+      ['Planned across all events', money(stats.budget), true],
+      [stats.days === null ? 'No date set yet' : `Until the first date (${dateText(stats.soonest)})`, stats.days === null ? '—' : `${stats.days} days`, false],
+      ['Tasks', `${stats.done}/${stats.tasks} done`, false],
+      ['People counted', stats.guests.toLocaleString('en-IN'), false]
+    ].map(([label, value, accent]) => `<div class="stat${accent ? ' accent' : ''}"><b>${esc(String(value))}</b><span>${esc(label)}</span></div>`).join('');
   }
+  const panel = $('#splits-panel');
+  panel.classList.toggle('hidden', !stats.splits.length || !stats.total);
+  if (stats.splits.length && stats.total) {
+    const max = stats.splits[0][1];
+    $('#splits').innerHTML = stats.splits.map(([name, value]) => `<div class="split">
+      <span>${esc(name)}</span>
+      <span class="track"><span style="width:${(value / max * 100).toFixed(1)}%"></span></span>
+      <b>${money(value)}</b>
+    </div>`).join('');
+  }
+  if (!events.length) { grid.innerHTML = ''; return; }
   grid.innerHTML = events.map(event => {
     const done = event.tasksCompleted ?? 0;
     const total = event.taskCount ?? 0;
     const percent = total ? Math.round(done / total * 100) : 0;
     const health = event.planHealth || {};
     return `<article class="event-card" data-event="${esc(event.id)}" tabindex="0" role="button" aria-label="Open ${esc(event.name)}">
-      <h3>${esc(event.name)}</h3>
+      <h4>${esc(event.name)}</h4>
       <div class="card-meta">${esc(event.type)} · ${esc(event.city)} · ${dateText(event.date)}</div>
-      <div class="progress-track"><span style="width:${Math.max(0, Math.min(100, percent))}%"></span></div>
-      <div class="card-foot"><span>${done}/${total} tasks${health.overSpent ? ' · over budget' : health.overdueTasks ? ` · ${health.overdueTasks} overdue` : ''}</span><b>${money(event.budget)}</b></div>
+      <div class="track spend"><span style="width:${Math.max(0, Math.min(100, percent))}%"></span></div>
+      <div class="card-foot"><span>${done} of ${total} tasks${health.overSpent ? ' · over budget' : health.overdueTasks ? ` · ${health.overdueTasks} overdue` : ''}</span><b>${money(event.budget)}</b></div>
       <div class="badge-row">${badge(event.planSource === 'ai-suggestion' ? 'AI plan' : 'Template plan')}${health.bookingRisk ? badge('Booking at risk', 'amber') : ''}</div>
     </article>`;
   }).join('');
@@ -165,7 +207,7 @@ function renderEvents() {
 const badge = (label, tone = '') => `<span class="badge ${tone}">${esc(label)}</span>`;
 
 /* ───────────────────────────── shared panels ───────────────────────────── */
-/** The four numbers that used to repeat on every tab, now one quiet chip row. */
+/** The numbers that matter, as one chip row instead of four repeated cards. */
 function chips() {
   const health = current.planHealth || {};
   const done = current.tasks.filter(task => task.status === 'completed').length;
@@ -187,17 +229,32 @@ function healthBanner() {
   if (health.daysToEvent !== null && health.daysToEvent < 45 && (current.vendors || []).every(vendor => vendor.status !== 'booked')) notes.push(`${health.daysToEvent} days to the event with nothing booked yet.`);
   (current.scheduleWarnings || []).forEach(warning => notes.push(esc(warning)));
   if (!notes.length) return '';
-  return `<div class="health-banner" role="note"><b>Plan checks</b><ul>${notes.map(note => `<li>${note}</li>`).join('')}</ul></div>`;
+  return `<div class="health-banner" role="note"><b>What the plan checks found</b><ul>${notes.map(note => `<li>${note}</li>`).join('')}</ul></div>`;
+}
+/** Hand-drawn progress ring: one number, no chart library. */
+function ring(percent, caption) {
+  const radius = 34, circumference = 2 * Math.PI * radius;
+  const offset = circumference * (1 - Math.max(0, Math.min(100, percent)) / 100);
+  return `<figure class="ring">
+    <svg viewBox="0 0 80 80" width="62" height="62" role="img" aria-label="${Math.round(percent)}% ${esc(caption)}">
+      <circle class="ring-bg" cx="40" cy="40" r="${radius}"></circle>
+      <circle class="ring-fg" cx="40" cy="40" r="${radius}" stroke-dasharray="${circumference.toFixed(1)}" stroke-dashoffset="${offset.toFixed(1)}"></circle>
+    </svg>
+    <b>${Math.round(percent)}%</b>
+    <figcaption>${esc(caption)}</figcaption>
+  </figure>`;
 }
 function budgetRows() {
-  return (current.categories || []).map(category => {
+  const categories = current.categories || [];
+  const biggest = Math.max(...categories.map(category => Number(category.allocation) || 0), 1);
+  return categories.map(category => {
     const spent = current.expenses.filter(expense => expense.categoryId === category.id).reduce((sum, expense) => sum + expense.amount, 0);
-    const percent = category.allocation ? Math.min(100, spent / category.allocation * 100) : 0;
+    const share = category.allocation ? Math.min(100, spent / category.allocation * 100) : 0;
     const source = category.source === 'ai-suggestion' ? 'AI proposal' : category.source === 'ai-accepted' ? 'You accepted an AI proposal' : category.source === 'user-entered' ? 'Edited by you' : 'Template';
     return `<div class="budget-row">
       <div><b>${esc(category.name)}</b><small>Spent ${money(spent)} of ${money(category.allocation)} · ${esc(source)}</small>${category.rationale ? `<small class="rationale">${esc(category.rationale)}</small>` : ''}</div>
       <strong>${money(category.allocation)}</strong>
-      <div class="progress-track"><span style="width:${percent.toFixed(1)}%;${spent > category.allocation ? 'background:var(--clay)' : ''}"></span></div>
+      <div class="track${spent > category.allocation ? ' over' : ' spend'}" title="${share.toFixed(0)}% of this category already spent"><span style="width:${(Number(category.allocation) / biggest * 100).toFixed(1)}%"></span></div>
       <form class="category-edit" data-category-edit="${esc(category.id)}">
         <input name="name" aria-label="Category name" value="${esc(category.name)}" maxlength="60" required>
         <input name="allocation" aria-label="Allocation in INR" type="number" min="0" step="0.01" value="${Number(category.allocation).toFixed(2)}" required>
@@ -212,6 +269,8 @@ function budgetRows() {
 function renderOverview() {
   const strategy = current.strategy || {};
   const profile = current.profile || {};
+  const done = current.tasks.filter(task => task.status === 'completed').length;
+  const percent = current.tasks.length ? done / current.tasks.length * 100 : 0;
   const profileChips = Object.entries(profile).filter(([, values]) => (values || []).length)
     .map(([key, values]) => `<div class="profile-line"><b>${esc(key)}</b><span>${values.map(esc).join(' · ')}</span></div>`).join('');
   return `${healthBanner()}
@@ -227,8 +286,8 @@ function renderOverview() {
         ${profileChips ? `<div class="profile-chips">${profileChips}</div>` : ''}
       </section>
       <section class="panel">
-        <div class="panel-head"><div><h3>Next actions</h3><div class="panel-sub">Sorted by deadline</div></div><button class="mini-button" data-go="timeline">All tasks</button></div>
-        ${taskRows(5)}
+        <div class="panel-head"><div><h3>Coming up</h3><div class="panel-sub">Nearest deadlines first, spaced by how far apart they really are</div></div><button class="mini-button" data-go="timeline">All tasks</button></div>
+        ${timelineRows(4)}
       </section>
       <section class="panel">
         <div class="panel-head"><div><h3>Risks and contingencies</h3><div class="panel-sub">Plan-side checks, not verified facts</div></div></div>
@@ -238,7 +297,17 @@ function renderOverview() {
     </div>
     <div>
       <section class="panel">
-        <div class="panel-head"><div><h3>Budget allocation</h3><div class="panel-sub">INR · totals computed by the app</div></div><button class="mini-button" data-go="budget">View budget</button></div>
+        <div class="panel-head"><div><h3>How this plan stands</h3><div class="panel-sub">Counted from your records, not from the model</div></div></div>
+        <div class="stand">
+          ${ring(percent, `${done} of ${current.tasks.length} tasks done`)}
+          <div class="ledger">
+            <div class="stat accent"><b>${money(current.planHealth?.remainingINR)}</b><span>Still unallocated</span></div>
+            <div class="stat"><b>${current.planHealth?.daysToEvent === null || current.planHealth?.daysToEvent === undefined ? 'No date' : `${current.planHealth.daysToEvent} days`}</b><span>${current.date ? `Until ${dateText(current.date)}` : 'Set the date to get deadlines'}</span></div>
+          </div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div><h3>Budget allocation</h3><div class="panel-sub">Bar length is share of the largest category; the darker part is already spent</div></div><button class="mini-button" data-go="budget">Open budget</button></div>
         ${budgetRows()}
       </section>
       <section class="panel">
@@ -261,9 +330,18 @@ function renderOverview() {
 const listBlock = (title, items = []) => (items || []).length ? `<div class="list-block"><b>${esc(title)}</b><ul>${items.map(item => `<li>${esc(item)}</li>`).join('')}</ul></div>` : '';
 
 function renderBudget() {
+  const health = current.planHealth || {};
+  const allocated = Number(health.allocatedINR) || 0;
+  const spent = Number(health.spentPaise ?? health.spentINR) || 0;
   return `${healthBanner()}
   <section class="panel">
-    <div class="panel-head"><div><h3>Budget intelligence</h3><div class="panel-sub">Allocations are editable. Totals, remaining balance and over-budget warnings are calculated by the application in integer paise.</div></div><span class="badge">INR</span></div>
+    <div class="panel-head"><div><h3>Budget intelligence</h3><div class="panel-sub">Allocations are editable. Totals, remaining balance and over-budget warnings are calculated by the application in integer paise — never by the model.</div></div><span class="badge plain">INR</span></div>
+    <div class="ledger" style="margin-bottom:var(--space-4)">
+      <div class="stat accent"><b>${money(current.budget)}</b><span>Total you set</span></div>
+      <div class="stat"><b>${money(health.remainingINR)}</b><span>Still unallocated</span></div>
+      <div class="stat"><b>${money(allocated)}</b><span>Planned across categories</span></div>
+      <div class="stat"><b>${money(spent)}</b><span>Recorded as spent</span></div>
+    </div>
     ${budgetRows()}
     <form class="inline-form" id="category-form"><input name="name" aria-label="New budget category name" placeholder="New category name" maxlength="60" required><input name="allocation" aria-label="New budget category allocation in INR" type="number" min="0" step="0.01" placeholder="Allocation ₹" value="0" required><button class="mini-button">Add category</button></form>
     <form class="inline-form" id="expense-form"><select name="categoryId" aria-label="Budget category">${current.categories.map(category => `<option value="${esc(category.id)}">${esc(category.name)}</option>`).join('')}</select><input name="description" aria-label="Expense description" placeholder="Expense description" required maxlength="160"><input name="amount" aria-label="Expense amount in INR" type="number" min="0.01" step="0.01" placeholder="Amount ₹" required><button class="mini-button">Add expense</button></form>
@@ -271,10 +349,40 @@ function renderBudget() {
   </section>
   <section class="panel">
     <div class="panel-head"><h3>Recorded expenses</h3><span class="muted">${current.expenses.length} entries</span></div>
-    ${current.expenses.length ? `<table class="table"><thead><tr><th>Description</th><th>Category</th><th>Date</th><th style="text-align:right">Amount</th></tr></thead><tbody>${current.expenses.map(expense => `<tr><td>${esc(expense.description)}</td><td>${esc(current.categories.find(category => category.id === expense.categoryId)?.name || '—')}</td><td>${dateText(expense.date)}</td><td class="amount">${money(expense.amount)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty-inline">No expenses recorded yet.</div>'}
+    ${current.expenses.length ? `<table class="table"><thead><tr><th>Description</th><th>Category</th><th>Date</th><th class="right">Amount</th></tr></thead><tbody>${current.expenses.map(expense => `<tr><td>${esc(expense.description)}</td><td>${esc(current.categories.find(category => category.id === expense.categoryId)?.name || '—')}</td><td>${dateText(expense.date)}</td><td class="amount">${money(expense.amount)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty-inline">No expenses recorded yet.</div>'}
   </section>`;
 }
 
+/**
+ * Timeline rows. Items are spaced by the real gap between deadlines, so the
+ * list reads as a sequence rather than a table of dates.
+ */
+function timelineRows(limit = 200) {
+  const tasks = [...(current.tasks || [])].sort((a, b) => (a.dueDate || '9999').localeCompare(b.dueDate || '9999'));
+  if (!tasks.length) return '<div class="empty-inline">No tasks yet. Add one below or ask your planner for a plan.</div>';
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  const dayGap = (from, to) => (!from || !to) ? null : Math.round((new Date(`${to}T12:00:00+05:30`) - new Date(`${from}T12:00:00+05:30`)) / 86_400_000);
+  let previous = null;
+  return `<div class="timeline">${tasks.slice(0, limit).map(task => {
+    const overdue = task.status !== 'completed' && task.dueDate && task.dueDate < today;
+    const daysLeft = task.dueDate ? dayGap(today, task.dueDate) : null;
+    const gap = previous && task.dueDate ? dayGap(previous, task.dueDate) : null;
+    previous = task.dueDate || previous;
+    const state = task.status === 'completed' ? 'done' : overdue ? 'late' : daysLeft !== null && daysLeft <= 14 ? 'now' : '';
+    const source = task.source === 'ai-suggestion' ? 'from AI' : task.source === 'ai-accepted' ? 'you accepted AI' : task.source === 'template' ? 'template' : 'you added';
+    const spacing = gap === null ? 0 : Math.min(34, Math.max(0, Math.round(gap / 3)));
+    return `<div class="tl-item ${state}" style="margin-top:${spacing}px">
+      <input type="checkbox" data-task="${esc(task.id)}" ${task.status === 'completed' ? 'checked' : ''} aria-label="Mark complete: ${esc(task.title)}">
+      <div class="tl-body">
+        <b>${esc(task.title)}</b>
+        <small>${task.urgency === 'schedule-now' ? 'Schedule now · ' : ''}${esc(source)}${task.dependsOnTitle ? ` · after “${esc(task.dependsOnTitle)}”` : ''}</small>
+        ${task.rationale ? `<small class="rationale">${esc(task.rationale)}</small>` : ''}
+      </div>
+      <div class="tl-when">${task.dueDate ? `<b>${dateText(task.dueDate)}</b>` : '<b>No date</b>'}<span>${overdue ? `${Math.abs(daysLeft)} days overdue` : daysLeft === null ? 'Date to be decided' : daysLeft === 0 ? 'Today' : `in ${daysLeft} days`}</span></div>
+      <button class="mini-button danger" data-task-delete="${esc(task.id)}" aria-label="Delete task ${esc(task.title)}">Delete</button>
+    </div>`;
+  }).join('')}</div>`;
+}
 function taskRows(limit = 200) {
   const tasks = [...(current.tasks || [])].sort((a, b) => (a.dueDate || '9999').localeCompare(b.dueDate || '9999'));
   if (!tasks.length) return '<div class="empty-inline">No tasks yet. Add one below or ask your planner for a plan.</div>';
@@ -291,45 +399,66 @@ function taskRows(limit = 200) {
   }).join('');
 }
 function renderTimeline() {
+  const done = current.tasks.filter(task => task.status === 'completed').length;
+  const percent = current.tasks.length ? done / current.tasks.length * 100 : 0;
   return `${healthBanner()}
   <section class="panel">
-    <div class="panel-head"><div><h3>Planning checklist</h3><div class="panel-sub">Deadlines are derived from the event date. When the date changes, open tasks are re-evaluated and any impossible schedule is flagged.</div></div><span class="badge">${current.tasks.filter(task => task.status === 'completed').length} / ${current.tasks.length} done</span></div>
+    <div class="panel-head">
+      <div><h3>Planning checklist</h3><div class="panel-sub">Deadlines are derived from the event date. When the date changes, open tasks are re-evaluated and any impossible schedule is flagged.</div></div>
+      ${ring(percent, `${done} of ${current.tasks.length} done`)}
+    </div>
     <form class="inline-form" id="task-form"><input name="title" aria-label="New task title" placeholder="Add a task" maxlength="160" required><input name="dueDate" type="date" aria-label="Due date"><select name="priority" aria-label="Priority"><option value="medium">Medium</option><option value="high">High</option><option value="low">Low</option></select><button class="mini-button">Add task</button></form>
-    ${taskRows()}
+    ${timelineRows()}
     <div class="quick-prompts"><button class="quick" data-focus="timeline">Ask the planner to re-plan deadlines</button></div>
   </section>`;
 }
 
 function renderVendors() {
   const requirements = current.vendorRequirements || [];
+  const longest = Math.max(...requirements.map(item => Number(item.whenBeforeEventDays) || 0), 1);
   return `${healthBanner()}
   <section class="panel">
-    <div class="panel-head"><div><h3>Vendor requirements</h3><div class="panel-sub">What to arrange and when. These are categories and lead times, not businesses: the app never invents vendor names, contacts, prices or availability.</div></div><span class="badge">${requirements.length} categories</span></div>
+    <div class="panel-head"><div><h3>Vendor requirements</h3><div class="panel-sub">What to arrange and when. These are categories and lead times, not businesses: the app never invents vendor names, contacts, prices or availability.</div></div><span class="badge plain">${requirements.length} categories</span></div>
     ${requirements.length ? requirements.map(item => `<div class="vendor-row">
-      <div class="task-info"><b>${esc(item.category)}</b><small>${esc(item.why || 'Reason not recorded')}</small>${(item.selectionCriteria || []).length ? `<small class="rationale">Checklist: ${item.selectionCriteria.map(esc).join(' · ')}</small>` : ''}</div>
-      <div class="when">${item.whenBeforeEventDays === null || item.whenBeforeEventDays === undefined ? 'No lead time set' : `Arrange ${item.whenBeforeEventDays} days before`}</div>
+      <div class="task-info"><b>${esc(item.category)}</b><small>${esc(item.why || 'Reason not recorded')}</small>${(item.selectionCriteria || []).length ? `<small class="rationale">Checklist: ${item.selectionCriteria.map(esc).join(' · ')}</small>` : ''}
+        ${item.whenBeforeEventDays === null || item.whenBeforeEventDays === undefined ? '' : `<span class="track" style="margin-top:8px"><span style="width:${(item.whenBeforeEventDays / longest * 100).toFixed(1)}%"></span></span>`}
+      </div>
+      <div class="when">${item.whenBeforeEventDays === null || item.whenBeforeEventDays === undefined ? 'No lead time set' : `${item.whenBeforeEventDays} days before`}</div>
       <select class="field" data-vr-status="${esc(item.id)}" aria-label="Status for ${esc(item.category)}">${['to-research', 'enquiring', 'booked', 'not-needed'].map(status => `<option value="${status}" ${item.status === status ? 'selected' : ''}>${status}</option>`).join('')}</select>
       <button class="mini-button danger" data-vr-delete="${esc(item.id)}" aria-label="Remove requirement ${esc(item.category)}">Remove</button>
     </div>`).join('') : '<div class="empty-inline">No requirements yet. Generate a plan or ask your planner.</div>'}
   </section>
   <section class="panel">
-    <div class="panel-head"><div><h3>Vendors you found</h3><div class="panel-sub">Only you can confirm a vendor exists, is available and quoted what they said.</div></div><span class="badge">${current.vendors.length} records</span></div>
+    <div class="panel-head"><div><h3>Vendors you found</h3><div class="panel-sub">Only you can confirm a vendor exists, is available and quoted what they said.</div></div><span class="badge plain">${current.vendors.length} records</span></div>
     <form class="inline-form" id="vendor-form"><input name="name" aria-label="Vendor or business name" placeholder="Vendor / business name" required maxlength="100"><input name="category" aria-label="Vendor category" placeholder="Category (e.g. catering)" required maxlength="80"><input name="phone" aria-label="Vendor contact, optional" placeholder="Contact (optional)" maxlength="40"><button class="mini-button">Add vendor</button></form>
     ${current.vendors.length ? current.vendors.map(vendor => `<div class="vendor-row"><div class="task-info"><b>${esc(vendor.name)}</b><small>${esc(vendor.category)} · ${esc(vendor.phone || 'No contact')} · unverified details</small></div>
       <select class="field" data-vendor-status="${esc(vendor.id)}" aria-label="Booking status for ${esc(vendor.name)}">${['enquiring', 'quoted', 'booked', 'cancelled'].map(status => `<option value="${status}" ${vendor.status === status ? 'selected' : ''}>${status}</option>`).join('')}</select>
       <button class="mini-button danger" data-vendor-delete="${esc(vendor.id)}" aria-label="Delete vendor ${esc(vendor.name)}">Delete</button></div>`).join('') : '<div class="empty-inline">No vendors added yet.</div>'}
   </section>
   <section class="panel">
-    <div class="panel-head"><div><h3>Quotation comparison</h3><div class="panel-sub">Amounts are what you entered, not verified market prices.</div></div></div>
+    <div class="panel-head"><div><h3>Quotation comparison</h3><div class="panel-sub">Amounts are what you entered, not verified market prices. The bar shows each quote against the largest.</div></div></div>
     <form class="inline-form" id="quote-form"><select name="vendorId" aria-label="Vendor" required>${current.vendors.map(vendor => `<option value="${esc(vendor.id)}">${esc(vendor.name)}</option>`).join('')}</select><input name="amount" aria-label="Quotation amount in INR" type="number" min="0" step="0.01" placeholder="Quote amount ₹" required><input name="note" aria-label="What the quotation includes" placeholder="What is included?" maxlength="300"><input name="file" type="file" accept="application/pdf,image/jpeg,image/png" aria-label="Attach quotation"><button class="mini-button" ${current.vendors.length ? '' : 'disabled'}>Add quote</button></form>
-    ${current.quotations.length ? `<table class="table"><thead><tr><th>Vendor</th><th style="text-align:right">Amount</th><th>Details</th><th>Source</th></tr></thead><tbody>${current.quotations.map(quote => `<tr><td>${esc(current.vendors.find(vendor => vendor.id === quote.vendorId)?.name || 'Removed vendor')}</td><td class="amount">${money(quote.amount)}</td><td>${esc(quote.note || '—')}${quote.file ? ` · file attached (${Math.round(quote.file.size / 1024)} KB)` : ''}</td><td>Unverified</td></tr>`).join('')}</tbody></table>` : '<div class="empty-inline">No quotations recorded.</div>'}
+    ${current.quotations.length ? (() => {
+      const biggest = Math.max(...current.quotations.map(quote => Number(quote.amount) || 0), 1);
+      return current.quotations.map(quote => `<div class="split">
+        <span>${esc(current.vendors.find(vendor => vendor.id === quote.vendorId)?.name || 'Removed vendor')}</span>
+        <span class="track"><span style="width:${(Number(quote.amount) / biggest * 100).toFixed(1)}%"></span></span>
+        <b>${money(quote.amount)}</b>
+      </div>${quote.note ? `<p class="muted" style="margin-top:-6px">${esc(quote.note)}${quote.file ? ` · file attached (${Math.round(quote.file.size / 1024)} KB)` : ''}</p>` : ''}`).join('');
+    })() : '<div class="empty-inline">No quotations recorded.</div>'}
   </section>`;
 }
 
 function renderGuests() {
+  const accepted = current.guests.filter(guest => guest.rsvp === 'accepted').length;
+  const declined = current.guests.filter(guest => guest.rsvp === 'declined').length;
+  const pending = current.guests.length - accepted - declined;
   return `
   <section class="panel">
-    <div class="panel-head"><div><h3>Guest list</h3><div class="panel-sub">Collect only the contact information you need and are allowed to keep. Contact details stay on this machine and are never sent to an AI provider.</div></div><span class="badge">${current.guests.length} guests</span></div>
+    <div class="panel-head"><div><h3>Guest list</h3><div class="panel-sub">Collect only the contact information you need and are allowed to keep. Contact details stay on this machine and are never sent to an AI provider.</div></div><span class="badge plain">${current.guests.length} guests</span></div>
+    ${current.guests.length ? `<div class="splits" style="margin-bottom:var(--space-4)">
+      ${[['Accepted', accepted], ['Declined', declined], ['Awaiting reply', pending]].map(([label, value]) => `<div class="split"><span>${label}</span><span class="track"><span style="width:${current.guests.length ? (value / current.guests.length * 100).toFixed(1) : 0}%"></span></span><b>${value}</b></div>`).join('')}
+    </div>` : ''}
     <form class="inline-form" id="guest-form"><input name="name" aria-label="Guest name" placeholder="Guest name" required maxlength="100"><input name="contact" aria-label="Guest contact, optional" placeholder="Contact (optional)" maxlength="120"><button class="mini-button">Add guest</button></form>
     ${current.guests.length ? current.guests.map(guest => `<div class="person-row"><div class="task-info"><b>${esc(guest.name)}</b><small>${esc(guest.contact || 'No contact details')}</small></div>
       <select class="field" data-rsvp="${esc(guest.id)}" aria-label="RSVP for ${esc(guest.name)}">${[['pending', 'Pending'], ['accepted', 'Accepted'], ['declined', 'Declined']].map(([value, label]) => `<option value="${value}" ${guest.rsvp === value ? 'selected' : ''}>${label}</option>`).join('')}</select>
@@ -348,8 +477,10 @@ function renderDetail() {
 /* ───────────────────────────── planner rail ───────────────────────────── */
 function messageRow(entry) {
   const role = entry.role === 'user' ? 'You' : 'Planner';
-  return `<div class="msg ${entry.role}"><b>${esc(role)}</b><p>${esc(entry.content)}</p>
-    ${entry.impact ? `<div class="impact">Impact: ${esc(entry.impact)}</div>` : ''}
+  const questions = (entry.questions || []).length ? `<div class="questions">${entry.questions.map(question => `<span class="quick" role="note">${esc(question)}</span>`).join('')}</div>` : '';
+  return `<div class="msg ${entry.role}"><span class="who">${esc(role)}</span><p>${esc(entry.content)}</p>
+    ${questions}
+    ${entry.impact ? `<div class="impact">${esc(entry.impact)}</div>` : ''}
     ${entry.rejected?.length ? `<div class="rejected">Skipped ${entry.rejected.length} proposed change(s): ${entry.rejected.map(item => esc(item.error)).join(' · ')}</div>` : ''}
     ${entry.actionStatus === 'applied' ? '<div class="applied">Proposal applied.</div>' : ''}</div>`;
 }
@@ -359,13 +490,32 @@ function proposalCard(proposal) {
     <div class="proposal-head"><b>Change proposal</b><span>expires ${esc(new Date(proposal.expiresAt).toLocaleTimeString('en-IN'))}</span></div>
     ${proposal.impact ? `<p class="muted">${esc(proposal.impact)}</p>` : ''}
     <ul class="action-list">${proposal.actions.map(action => `<li>${esc(action.label)}</li>`).join('')}</ul>
-    ${check ? `<div class="check"><b>Money effect, calculated here</b><table class="table compact"><thead><tr><th></th><th>Allocated</th><th>Spent</th><th>Remaining</th></tr></thead><tbody>
-      <tr><td>Now</td><td>${money(check.before.allocatedINR)}</td><td>${money(check.before.spentINR)}</td><td>${money(check.before.remainingINR)}</td></tr>
-      <tr><td>After</td><td>${money(check.after.allocatedINR)}</td><td>${money(check.after.spentINR)}</td><td>${money(check.after.remainingINR)}</td></tr></tbody></table>
+    ${check ? `<div class="check"><span class="label">Money effect, calculated here</span><table class="table compact"><thead><tr><th></th><th class="right">Allocated</th><th class="right">Spent</th><th class="right">Remaining</th></tr></thead><tbody>
+      <tr><td>Now</td><td class="right">${money(check.before.allocatedINR)}</td><td class="right">${money(check.before.spentINR)}</td><td class="right">${money(check.before.remainingINR)}</td></tr>
+      <tr><td>After</td><td class="right">${money(check.after.allocatedINR)}</td><td class="right">${money(check.after.spentINR)}</td><td class="right">${money(check.after.remainingINR)}</td></tr></tbody></table>
       ${check.overAllocated ? '<div class="rejected">Warning: this leaves allocations above your total budget.</div>' : ''}${check.overSpent ? '<div class="rejected">Warning: this leaves recorded spend above your total budget.</div>' : ''}</div>` : ''}
     ${proposal.screening?.warnings?.length ? `<div class="rejected">${proposal.screening.warnings.map(esc).join(' · ')}</div>` : ''}
     ${proposal.rejected?.length ? `<div class="rejected">Not applicable: ${proposal.rejected.map(item => esc(`${item.op} — ${item.error}`)).join(' · ')}</div>` : ''}
     <div class="proposal-actions"><button class="button primary" data-approve="${esc(proposal.id)}">Approve &amp; apply</button><button class="button secondary" data-reject="${esc(proposal.id)}">Dismiss</button></div>
+  </div>`;
+}
+/** What the planner has understood so far. Optional action, never a gate. */
+function draftCard() {
+  const fields = plannerDraft || {};
+  const rows = [
+    ['Event', fields.name || null],
+    ['Type', fields.type || null],
+    ['City', fields.city || null],
+    ['Date', fields.date ? dateText(fields.date) : null],
+    ['Guests', fields.guests ? String(fields.guests) : null],
+    ['Budget', fields.budget ? money(fields.budget) : null]
+  ];
+  return `<div class="draft-card">
+    <b>What I have so far</b>
+    ${rows.map(([label, value]) => `<div class="row${value ? '' : ' gap'}"><span>${esc(label)}</span><b>${value ? esc(value) : 'not yet'}</b></div>`).join('')}
+    ${plannerReady
+      ? '<button class="button primary" id="draft-plan">Create my plan</button><span class="muted">Or keep talking — nothing is saved yet.</span>'
+      : '<span class="muted">Tell me the rest whenever you like, or use “Enter details” to fill it in.</span>'}
   </div>`;
 }
 function errorBanner(error) {
@@ -373,25 +523,25 @@ function errorBanner(error) {
   return `<div>
     <div><b>${esc(error.title)}</b> ${esc(error.message)}${countdown}</div>
     ${error.cause ? `<div class="muted">${esc(error.cause)}</div>` : ''}
-    <div class="retry-row"><button class="button secondary" id="chat-retry">Try again</button><span class="muted">Your saved plan is untouched.</span></div>
+    <div class="retry-row"><button class="button secondary" id="chat-retry">Try again</button><span class="muted">Nothing was changed.</span></div>
   </div>`;
 }
 /** Only the rail's dynamic parts re-render, so the composer keeps its text. */
 function renderChat() {
   clearInterval(countdownTimer);
   const open = Boolean(current);
-  $('#chat-empty').classList.toggle('hidden', open);
-  $('#chat-scroll').classList.toggle('hidden', !open);
-  $('#planner-foot').classList.toggle('hidden', !open);
+  const talking = open || plannerHistory.length > 0;
+  $('#chat-intro').classList.toggle('hidden', talking);
+  $('#chat-scroll').classList.toggle('hidden', !talking);
   $('#planner-sub').textContent = open
-    ? `Reading ${current.name}’s live plan. Nothing changes until you approve it.`
-    : 'Reads this event’s live plan. Nothing changes until you approve it.';
-  if (!open) { $('#planner-fab').classList.add('hidden'); return; }
-  $('#planner-fab').classList.toggle('hidden', $('.planner').classList.contains('open'));
-  const conversation = current.conversation || [];
-  const pending = proposals.filter(proposal => proposal.status === 'pending');
-  $('#transcript').innerHTML = `${conversation.length ? conversation.map(messageRow).join('') : '<div class="empty-inline">No conversation yet. Ask for a change — “cut the budget to 6 lakh”, “the photographer cancelled”, “add 50 guests”.</div>'}
-    ${assistantBusy ? '<div class="typing" role="status">Thinking about your plan…</div>' : ''}`;
+    ? `Reading ${current.name}’s plan as it stands now. Nothing changes until you approve it.`
+    : 'Talk it through in your own words. Nothing changes until you approve it.';
+  $('#planner-fab').classList.toggle('hidden', !talking || $('.planner').classList.contains('open'));
+  const messages = open ? (current.conversation || []) : plannerHistory;
+  const pending = open ? proposals.filter(proposal => proposal.status === 'pending') : [];
+  $('#transcript').innerHTML = `${messages.length ? messages.map(messageRow).join('') : `<div class="empty-inline">Ask for a change — “cut the budget to 6 lakh”, “the photographer cancelled”, “add 50 guests”.</div>`}
+    ${assistantBusy ? '<div class="typing" role="status"><i></i><i></i><i></i><i></i><i></i><span>Thinking…</span></div>' : ''}`;
+  $('#chat-draft').innerHTML = open ? '' : (plannerHistory.length ? draftCard() : '');
   $('#chat-proposals').innerHTML = pending.map(proposalCard).join('');
   const errorSlot = $('#chat-error');
   errorSlot.innerHTML = chatError ? errorBanner(chatError) : '';
@@ -400,10 +550,26 @@ function renderChat() {
   send.disabled = assistantBusy;
   send.textContent = assistantBusy ? 'Thinking…' : 'Send';
   $('#assistant-input').disabled = assistantBusy;
+  $('#assistant-input').placeholder = open
+    ? 'Ask about this event, or describe a change…'
+    : 'Describe the event in your own words…';
+  renderQuickPrompts(open);
   wireChat();
   const scroll = $('#chat-scroll');
   scroll.scrollTop = scroll.scrollHeight;
   if (chatError?.retryAfterSeconds) startCountdown(chatError.retryAfterSeconds);
+}
+const QUICK_OPEN = ['My budget has decreased', 'We are inviting more guests', 'A vendor just cancelled', 'Make it more elegant without more money'];
+const QUICK_NEW = ['Birthday for my younger brother, about 30 people, not too expensive', 'A wedding for 250 guests in Pune next December', 'A community feast in Kolkata this winter'];
+function renderQuickPrompts(open) {
+  const prompts = open ? QUICK_OPEN : QUICK_NEW;
+  const box = $('#quick-prompts');
+  box.innerHTML = prompts.map(prompt => `<button class="quick" type="button">${esc(prompt)}</button>`).join('');
+  $$('.quick', box).forEach(button => button.addEventListener('click', () => {
+    const input = $('#assistant-input');
+    input.value = button.textContent;
+    input.focus();
+  }));
 }
 function startCountdown(seconds) {
   let left = seconds;
@@ -417,11 +583,20 @@ function startCountdown(seconds) {
 function wireChat() {
   $$('#chat-proposals [data-approve]').forEach(button => button.addEventListener('click', () => resolveProposal(button.dataset.approve, 'approve')));
   $$('#chat-proposals [data-reject]').forEach(button => button.addEventListener('click', () => resolveProposal(button.dataset.reject, 'reject')));
+  $('#draft-plan')?.addEventListener('click', () => {
+    const fields = plannerDraft || {};
+    generatePlan({
+      name: fields.name || 'New event', type: fields.type, city: fields.city, date: fields.date || '',
+      guests: Number(fields.guests) || 0, budget: Number(fields.budget) || 0,
+      brief: plannerHistory.filter(item => item.role === 'user').map(item => item.content).join('\n').slice(0, 4000),
+      profile: { style: fields.style || [], priorities: fields.priorities || [] }
+    });
+  });
   $('#chat-retry')?.addEventListener('click', () => {
     const request = lastRequest;
     chatError = null;
     renderChat();
-    if (request) sendAssistant(request);
+    if (request) sendToPlanner(request);
   });
 }
 
@@ -438,11 +613,12 @@ function mergeIntoList(event) {
     planSource: event.planSource, aiProvider: event.aiProvider,
     taskCount: tasks.length, tasksCompleted: tasks.filter(task => task.status === 'completed').length,
     taskBrief: tasks.map(task => ({ id: task.id, title: task.title, status: task.status, dueDate: task.dueDate, priority: task.priority })),
+    categoryBrief: (event.categories || []).map(category => ({ name: category.name, allocation: category.allocation })),
     summary: event.summary, planHealth: event.planHealth
   };
   const index = events.findIndex(item => item.id === event.id);
   if (index >= 0) events[index] = card; else events.unshift(card);
-  renderEvents();
+  renderLanding();
 }
 async function saveTo(url, payload, method = 'POST') {
   current = await api(url, { method, body: JSON.stringify(payload) });
@@ -450,7 +626,7 @@ async function saveTo(url, payload, method = 'POST') {
   mergeIntoList(current);
   return current;
 }
-async function refreshList() { events = await api('/api/events'); renderEvents(); }
+async function refreshList() { events = await api('/api/events'); renderLanding(); }
 
 async function submitForm(event, url) {
   event.preventDefault();
@@ -474,22 +650,38 @@ async function submitForm(event, url) {
   } catch (error) { notify(error.message, 'bad'); }
 }
 
-async function sendAssistant({ message = '', focus = null }) {
-  if (assistantBusy || !current) return;
+/**
+ * One entry point for both planner modes. With an event open it runs a revision
+ * turn; without one it runs the free-text intake. Neither requires the user to
+ * have picked anything first.
+ */
+async function sendToPlanner({ message = '', focus = null }) {
+  if (assistantBusy || !message.trim() && !focus) return;
   assistantBusy = true;
   lastRequest = { message, focus };
   chatError = null;
+  // The pre-event transcript is held here; the server stays stateless.
+  const history = current ? null : plannerHistory.slice();
+  if (!current) plannerHistory.push({ role: 'user', content: message });
   renderChat();
   try {
-    const result = await api(`/api/events/${current.id}/assistant`, { method: 'POST', body: { message, focus } });
-    current = result.event;
-    if (result.conversation) current.conversation = result.conversation;
-    await loadProposals();
-    mergeIntoList(current);
-    if (result.proposal) notify(`Proposal ready: ${result.proposal.actions.length} change(s) awaiting your approval.`, 'ok');
-    else if (result.screening?.blockers?.length) notify(`Your plan checks blocked the planner's changes: ${result.screening.blockers.join(' ')} Nothing was applied.`, 'bad');
-    else if (result.rejected?.length) notify('The planner answered, but none of its proposed changes were applicable.', 'warn');
-    else notify('The planner answered.', 'ok');
+    if (current) {
+      const result = await api(`/api/events/${current.id}/assistant`, { method: 'POST', body: { message, focus } });
+      current = result.event;
+      if (result.conversation) current.conversation = result.conversation;
+      await loadProposals();
+      mergeIntoList(current);
+      if (result.proposal) notify(`Proposal ready: ${result.proposal.actions.length} change(s) awaiting your approval.`, 'ok');
+      else if (result.screening?.blockers?.length) notify(`Your plan checks blocked the planner's changes: ${result.screening.blockers.join(' ')} Nothing was applied.`, 'bad');
+      else if (result.rejected?.length) notify('The planner answered, but none of its proposed changes were applicable.', 'warn');
+      else notify('The planner answered.', 'ok');
+    } else {
+      const result = await api('/api/ai/consult', { method: 'POST', body: { message, history, draft: plannerDraft || {} } });
+      plannerHistory.push({ role: 'assistant', content: result.reply, questions: result.questions });
+      plannerDraft = result.fields;
+      plannerReady = result.ready;
+      if (plannerReady) notify('Your planner has enough to build a first plan.', 'ok');
+    }
   } catch (error) {
     if (error.payload?.event) current = error.payload.event;
     const payload = error.payload || {};
@@ -503,12 +695,13 @@ async function sendAssistant({ message = '', focus = null }) {
   } finally {
     assistantBusy = false;
     renderChat();
+    $('#assistant-input').focus();
   }
 }
 
 function wireDetail() {
   $$('[data-go]').forEach(button => button.addEventListener('click', () => showDetail(button.dataset.go)));
-  $$('[data-focus]').forEach(button => button.addEventListener('click', () => sendAssistant({ focus: button.dataset.focus })));
+  $$('[data-focus]').forEach(button => button.addEventListener('click', () => sendToPlanner({ focus: button.dataset.focus })));
   $$('[data-task]').forEach(box => box.addEventListener('change', async () => {
     try { await saveTo(`/api/events/${current.id}/tasks`, { id: box.dataset.task, status: box.checked ? 'completed' : 'pending' }, 'PATCH'); }
     catch (error) { notify(error.message, 'bad'); }
@@ -647,11 +840,21 @@ function setMode(mode) {
 $$('.seg').forEach(button => button.addEventListener('click', () => setMode(button.dataset.mode)));
 $('#close-create').addEventListener('click', closeDialog);
 $('#cancel-create').addEventListener('click', closeDialog);
-$('#new-event').addEventListener('click', () => openCreate('describe'));
-$('#hero-create').addEventListener('click', () => openCreate('describe'));
+$('#new-event').addEventListener('click', () => {
+  if (current) { showList(); }
+  $('#assistant-input').focus();
+});
+// The landing's primary action is the conversation; the form stays available.
+$('#hero-create').addEventListener('click', () => {
+  const input = $('#assistant-input');
+  input.focus();
+  input.setSelectionRange(0, 0);
+  if (window.matchMedia('(max-width: 900px)').matches) setPlannerOpen(true);
+});
+$('#manual-create').addEventListener('click', () => openCreate('describe'));
 $('#edit-event').addEventListener('click', () => openCreate('describe', true));
 
-/* AI intake */
+/* AI intake, manual dialog path */
 $('#understand-btn').addEventListener('click', async () => {
   const brief = $('#brief').value.trim();
   const status = $('#understand-status');
@@ -720,7 +923,7 @@ function draftPayload() {
 async function generatePlan(input) {
   const button = $('#save-review');
   try {
-    $('#plan-from-draft')?.setAttribute('disabled', '');
+    $('#draft-plan')?.setAttribute('disabled', '');
     $('#understand-status').textContent = 'Building your plan…';
     const plan = await api('/api/plan', { method: 'POST', body: input });
     pendingPlan = { plan, input };
@@ -728,7 +931,7 @@ async function generatePlan(input) {
     closeDialog();
     openDialog($('#review-backdrop'));
   } catch (error) { notify(error.message, 'bad'); }
-  finally { $('#plan-from-draft')?.removeAttribute('disabled'); button.disabled = false; }
+  finally { $('#draft-plan')?.removeAttribute('disabled'); $('#plan-from-draft')?.removeAttribute('disabled'); button.disabled = false; }
 }
 
 function renderReview(plan, input) {
@@ -779,6 +982,7 @@ $('#save-review').addEventListener('click', async () => {
     closeDialog();
     await refreshList();
     chatError = null;
+    plannerHistory = []; plannerDraft = null; plannerReady = false;
     await loadConversation();
     await loadProposals();
     showDetail('overview');
@@ -808,17 +1012,13 @@ $('#mode-manual').addEventListener('submit', async event => {
 });
 
 /* ───────────────────────────── planner rail chrome ───────────────────────────── */
-const QUICK_PROMPTS = ['My budget has decreased to 6 lakh', 'We are inviting 50 more guests', 'The photographer cancelled', 'Make it more elegant without more money'];
-$('#quick-prompts').innerHTML = QUICK_PROMPTS.map(prompt => `<button class="quick" type="button">${esc(prompt)}</button>`).join('');
-$$('#quick-prompts .quick').forEach(button => button.addEventListener('click', () => sendAssistant({ message: button.textContent })));
-
 $('#assistant-form').addEventListener('submit', event => {
   event.preventDefault();
   const input = $('#assistant-input');
   const message = input.value.trim();
   if (!message) return;
   input.value = '';
-  sendAssistant({ message });
+  sendToPlanner({ message });
 });
 // Enter sends, Shift+Enter adds a line — the same contract as the hint text.
 $('#assistant-input').addEventListener('keydown', event => {
@@ -832,7 +1032,8 @@ function setPlannerOpen(open) {
   $('.planner').classList.toggle('open', open);
   const fab = $('#planner-fab');
   fab.setAttribute('aria-expanded', String(open));
-  fab.classList.toggle('hidden', open || !current);
+  if (open) $('#assistant-input').focus();
+  renderChat();
 }
 $('#planner-close').addEventListener('click', () => setPlannerOpen(false));
 $('#planner-fab').addEventListener('click', () => setPlannerOpen(true));

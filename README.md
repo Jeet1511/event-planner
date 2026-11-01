@@ -72,6 +72,9 @@ reviewed before saving, and assistant changes are applied only after you approve
 ## Feature status
 
 - [x] Wedding, birthday and community templates
+- [x] **Talk-to-create**: the planner answers in the rail before any event exists, accumulates
+  details across turns ("actually make it 45 people and 55 thousand" is understood as a correction),
+  and offers a plan when enough is known — no modal, no mandatory option
 - [x] Natural-language event brief → extracted, editable, confirmed fields
 - [x] AI plan: strategy, budget shares, dependent timeline, vendor why/when, risks, ideas
 - [x] Event-context planning assistant with approve/dismiss action proposals, permanently docked in
@@ -132,9 +135,31 @@ What changed:
 behaviour, p95 latency at 40 events, read-cache invalidation and the bounded AI queue. It reads raw
 `http` responses because `fetch` decompresses silently and would measure nothing.
 
-Frontend budget: 58.2 KB of `app.js` + 25.1 KB of CSS + 10.8 KB of HTML, zero dependencies, zero
-build step, one module request. There is no framework, so there is no hydration, no code-splitting
-decision and no bundle graph to audit — the whole client is smaller than one typical React app shell.
+Frontend budget: 70.5 KB of `app.js` + 34 KB of CSS + 11 KB of HTML, **24 KB Brotli for the whole
+client**, zero dependencies, zero build step, one module request each. There is no framework, so
+there is no hydration, no code-splitting decision and no bundle graph to audit — the entire client
+is smaller than one typical React app shell. `test/performance.test.mjs` gates the two files
+individually *and* combined, so growth in one has to be paid for out of the other.
+
+## Design direction
+
+The interface was rebuilt against the local `motionsites.ai` prompt library (132 hero/landing
+specs). Four candidates were read in full and compared; the direction taken is a **three-zone
+workspace with numeral-first hierarchy**, adapted from the Nexar spec's structure, plus the
+allocation/progress drawing vocabulary of the crypto-wealth spec — the only information-visual
+language in the library (hand-written SVG area marks, progress rings, label/value rows). What was
+deliberately *not* taken: video backgrounds, glassmorphism, gradient headlines, rotated cards.
+
+The library also documents itself as a trap: the same devices recur regardless of subject
+(`backdrop-blur` in 64 of 132, one italic accent word inside a serif headline in 46, ALL-CAPS
+tracked micro-labels in 30, three identical cards in 18, UI text at 9–11px in 12). Those counts are
+why this interface has **no text smaller than 13px**, no eyebrow label above a heading, no italic
+word in a headline, and one bar/ring primitive reused everywhere instead of a card kit.
+
+Type: an old-style serif (Iowan Old Style → Palatino Linotype → Georgia, all already on the machine,
+nothing downloaded) for the event name, panel titles and the planner's own voice; the system UI face
+for controls and data, with tabular numerals on every rupee figure. Colour: bottle-green ink on bone
+paper, with marigold reserved for the AI alone — rail edge, proposals, send button, focus ring.
 
 ### AI token cost (the reason chat used to appear dead)
 

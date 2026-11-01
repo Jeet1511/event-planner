@@ -165,8 +165,46 @@ export function validateExtraction(value, brief = '') {
   };
 }
 
-const KNOWN_OPS = new Set(['update_event', 'set_budget_allocation', 'add_budget_category', 'add_tasks', 'update_task', 'remove_task', 'add_vendor_requirement', 'update_vendor_status', 'set_profile', 'add_ideas']);
+/**
+ * Pre-event conversation turn. The model returns the WHOLE current picture, so
+ * anything it drops or garbles falls back to what the user already told us —
+ * one bad turn must never erase the details gathered in an earlier one.
+ */
+export function validateConsult(value, known = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('AI response must be a JSON object.');
+  const reply = text(value.reply, 700);
+  if (reply.length < 2) throw new Error('AI reply is empty.');
+  if (Array.isArray(value.questions) && value.questions.length > 2) throw new Error('Too many questions returned.');
+  const questions = Array.isArray(value.questions) ? value.questions.map(item => text(item, 240)).filter(Boolean) : [];
+  const raw = value.fields && typeof value.fields === 'object' ? value.fields : {};
+  const today = indiaDateToday();
+  const date = isoDate(String(raw.date ?? ''));
+  const type = EVENT_TYPES.includes(raw.eventType) ? raw.eventType : (EVENT_TYPES.includes(known.type) ? known.type : null);
+  const guests = Number(raw.guestCount);
+  const budget = Number(raw.budgetINR);
+  const list = key => Array.isArray(raw[key]) ? raw[key].slice(0, 6).map(item => text(item, 160)).filter(Boolean) : (Array.isArray(known[key]) ? known[key] : []);
+  const resolvedType = type || null;
+  const resolvedCity = text(raw.city, 80) || known.city || '';
+  // A name is not something the model gets to invent. If the user never gave
+  // one, the interface names it from what is actually known.
+  const fallbackName = resolvedType ? `${resolvedType[0].toUpperCase()}${resolvedType.slice(1)}${resolvedCity ? ` in ${resolvedCity}` : ''}` : 'New event';
+  return {
+    reply,
+    questions,
+    fields: {
+      name: text(raw.eventName, 100) || known.name || fallbackName,
+      type: resolvedType,
+      city: resolvedCity,
+      date: date && date >= today ? date : (known.date && known.date >= today ? known.date : null),
+      guests: Number.isInteger(guests) && guests > 0 && guests <= 100_000 ? guests : (known.guests ?? null),
+      budget: Number.isFinite(budget) && budget > 0 && budget <= 1_000_000_000 ? Math.round(budget * 100) / 100 : (known.budget ?? null),
+      style: list('style'),
+      priorities: list('priorities')
+    }
+  };
+}
 
+const KNOWN_OPS = new Set(['update_event', 'set_budget_allocation', 'add_budget_category', 'add_tasks', 'update_task', 'remove_task', 'add_vendor_requirement', 'update_vendor_status', 'set_profile', 'add_ideas']);
 /** Assistant turns: bounded prose plus a proposal list that is only ever
  * screened by deterministic code before anything is applied. */
 export function validateAssistantTurn(value, event) {

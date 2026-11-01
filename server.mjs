@@ -7,8 +7,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { createPlan, validateEvent, validateExpense, calculateBudget, indiaDateToday } from './src/core.mjs';
-import { aiHealth, activeProvider, assistantTurn, cleanError, generatePlan, screenActions, understandBrief, validateAIProposal } from './src/ai.mjs';
-import { applyActions, analyzeImpact, budgetView, eventFingerprint, plannedGuests, resolveSchedule, RUPEE, sharesToPaise } from './src/planning.mjs';
+import { aiHealth, activeProvider, assistantTurn, cleanError, consultTurn, generatePlan, screenActions, understandBrief, validateAIProposal } from './src/ai.mjs';
+import { applyActions, analyzeImpact, budgetView, eventFingerprint, isoDate, plannedGuests, resolveSchedule, RUPEE, sharesToPaise } from './src/planning.mjs';
 import { assertSafeDeployment } from './src/deployment.mjs';
 
 const COMPRESS_MIN_BYTES = 860;
@@ -184,6 +184,9 @@ function listEvent(event) {
     // Slim task view: enough to tick a task off straight from a card, without
     // shipping every description for an event the user is not looking at.
     taskBrief: tasks.map(task => ({ id: task.id, title: task.title, status: task.status, dueDate: task.dueDate, priority: task.priority })),
+    // Names and amounts only: the landing screen adds these up across events to
+    // show where the money is planned, which needs no description or rationale.
+    categoryBrief: (event.categories || []).map(category => ({ name: category.name, allocation: Number(category.allocation) || 0 })),
     summary: calculateBudget(event),
     planHealth: {
       overSpent: health.overSpent, overAllocated: health.overAllocated, overdueTasks: health.overdueTasks,
@@ -231,6 +234,34 @@ function sanitizeProfile(input = {}) {
     profile[field] = value.slice(0, 12).map(item => String(item).trim().slice(0, 160)).filter(Boolean);
   }
   return profile;
+}
+
+/**
+ * The pre-event draft is client-held and untrusted, so it is re-validated here
+ * on every turn: a tampered draft cannot smuggle a bad date, a negative budget
+ * or a 100,000-guest event into plan generation.
+ */
+function sanitizeDraft(input = {}) {
+  const list = value => Array.isArray(value) ? value.slice(0, 6).map(item => String(item).trim().slice(0, 160)).filter(Boolean) : [];
+  const guests = Number(input.guests);
+  const budget = Number(input.budget);
+  const date = isoDate(String(input.date ?? ''));
+  return {
+    name: String(input.name ?? '').trim().slice(0, 100),
+    type: ['wedding', 'birthday', 'community'].includes(input.type) ? input.type : null,
+    city: String(input.city ?? '').trim().slice(0, 80),
+    date: date && date >= indiaDateToday() ? date : null,
+    guests: Number.isInteger(guests) && guests > 0 && guests <= 100_000 ? guests : null,
+    budget: Number.isFinite(budget) && budget > 0 && budget <= 1_000_000_000 ? Math.round(budget * 100) / 100 : null,
+    style: list(input.style),
+    priorities: list(input.priorities)
+  };
+}
+
+/** Everything the planner was told, as one brief for deterministic planning. */
+function historyText(history, message) {
+  return [...(history || []).filter(item => item.role === 'user').map(item => item.content), message]
+    .filter(Boolean).join('\n').slice(0, 4000);
 }
 
 function summarizeAction(action) {
@@ -445,6 +476,24 @@ export function createApp({ dataDir, ai = null, now = () => new Date() } = {}) {
       const result = await aiCall('Event understanding', provider => understandBrief(brief, { provider }));
       if (result.unavailable) return sendAiFailure(res, result, { fallback: 'manual-form', brief });
       send(res, 200, { extraction: result.extraction, provider: result.provider, model: result.model, generatedAt: result.createdAt, brief });
+    },
+
+    async consult(req, res) {
+      const input = await readBody(req);
+      const message = str(input.message, 3000);
+      if (message.length < 4) throw new HttpError(400, 'Say a little more about the event first.');
+      const draft = sanitizeDraft(input.draft);
+      const history = (Array.isArray(input.history) ? input.history : []).slice(-8)
+        .filter(item => item && typeof item.text === 'string')
+        .map(item => ({ role: item.role === 'user' ? 'user' : 'assistant', content: String(item.text).slice(0, 400) }));
+      takeQuota(`${req.socket.remoteAddress}:consult`);
+      const result = await aiCall('Planning conversation', provider => consultTurn({ message, history, draft, provider }));
+      if (result.unavailable) return sendAiFailure(res, result, { draft });
+      send(res, 200, {
+        reply: result.reply, questions: result.questions, fields: result.fields,
+        ready: result.ready, missing: result.missing, brief: historyText(history, message),
+        provider: result.provider, model: result.model
+      });
     },
 
     async plan(req, res) {
@@ -808,6 +857,7 @@ export function createApp({ dataDir, ai = null, now = () => new Date() } = {}) {
       if (req.method === 'GET' && url.pathname === '/api/events') return routes.listEvents(req, res);
       if (req.method === 'POST' && url.pathname === '/api/plan') return routes.plan(req, res);
       if (req.method === 'POST' && url.pathname === '/api/ai/understand') return routes.understand(req, res);
+      if (req.method === 'POST' && url.pathname === '/api/ai/consult') return routes.consult(req, res);
       if (req.method === 'POST' && url.pathname === '/api/events') return routes.createEvent(req, res);
       const match = url.pathname.match(/^\/api\/events\/([a-f0-9-]{36})(?:\/([^/]+))?(?:\/([^/]+))?(?:\/([^/]+))?$/i);
       if (match) {

@@ -299,6 +299,79 @@ test('an impossible due date on a new task is refused, not clamped into nonsense
   });
 });
 
+test('the planner can be talked to before any event exists', async () => {
+  await withApp([], async ({ call, provider }) => {
+    provider.push({
+      reply: 'A birthday for a younger brother is very doable on a modest budget. Tell me roughly how much you want to spend and I will shape the money around it.',
+      questions: ['Roughly how much do you want to spend?'],
+      fields: { eventName: "Brother's birthday", eventType: 'birthday', city: 'Kolkata', date: '', guestCount: 30, budgetINR: 0, style: [], priorities: [] }
+    });
+    const turn = await call('/api/ai/consult', { method: 'POST', body: { message: 'Birthday party for my younger brother, around 30 people, I do not want to spend too much.', history: [], draft: {} } });
+    assert.equal(turn.status, 200);
+    assert.equal(turn.json.ready, false, 'a missing budget is not enough to plan');
+    assert.deepEqual(turn.json.missing, ['a budget in rupees']);
+    assert.match(turn.json.reply, /doable/i, 'the reply is prose, not a form');
+    assert.equal(turn.json.questions.length, 1);
+    assert.equal(turn.json.fields.guests, 30);
+    assert.equal(turn.json.fields.type, 'birthday');
+  });
+});
+
+test('a later turn keeps what the planner already understood', async () => {
+  await withApp([], async ({ call, provider }) => {
+    const known = { name: "Brother's birthday", type: 'birthday', city: 'Kolkata', date: null, guests: 30, budget: null, style: [], priorities: [] };
+    // The model returns the whole picture; the missing budget falls back to the
+    // carried-forward draft rather than becoming zero or undefined.
+    provider.push({ reply: 'Got it, 40 people instead.', questions: [], fields: { eventName: '', eventType: 'birthday', city: '', date: '', guestCount: 40, budgetINR: 0, style: [], priorities: [] } });
+    const turn = await call('/api/ai/consult', { method: 'POST', body: { message: 'Actually make it 40 people.', history: [{ role: 'user', text: 'Birthday for my brother, 30 people, Kolkata.' }], draft: known } });
+    assert.equal(turn.status, 200);
+    assert.equal(turn.json.fields.name, "Brother's birthday", 'an empty field from the model cannot erase a known one');
+    assert.equal(turn.json.fields.city, 'Kolkata');
+    assert.equal(turn.json.fields.guests, 40, 'the new number wins');
+  });
+});
+
+test('readiness is decided by the application, not by the model', async () => {
+  await withApp([], async ({ call, provider }) => {
+    provider.push({ reply: 'Everything is ready, promise.', questions: [], fields: { eventName: 'Feast', eventType: 'community', city: 'Kolkata', date: '', guestCount: 120, budgetINR: 0, style: [], priorities: [] } });
+    const turn = await call('/api/ai/consult', { method: 'POST', body: { message: 'A community feast for 120 in Kolkata.', history: [], draft: {} } });
+    assert.equal(turn.json.ready, false, 'a confident claim of readiness does not create one');
+    assert.ok(turn.json.missing.includes('a budget in rupees'));
+  });
+});
+
+test('a tampered draft cannot smuggle bad data into the conversation', async () => {
+  await withApp([], async ({ call, provider }) => {
+    provider.push({ reply: 'Noted.', questions: [], fields: { eventName: 'X', eventType: 'birthday', city: 'Pune', date: '', guestCount: 5, budgetINR: 1000, style: [], priorities: [] } });
+    const turn = await call('/api/ai/consult', {
+      method: 'POST',
+      body: {
+        message: 'Small birthday, 5 people, ₹1,000.',
+        history: [],
+        draft: { date: '31-02-2027', budget: -99, guests: 1e9, type: 'wizard', city: 'x'.repeat(500) }
+      }
+    });
+    assert.equal(turn.status, 200);
+    assert.notEqual(turn.json.fields.date, '31-02-2027');
+    assert.ok(!turn.json.fields.city || turn.json.fields.city.length <= 80, 'the city stays bounded');
+    assert.notEqual(turn.json.fields.type, 'wizard');
+  });
+});
+
+test('the consult route is rate limited and never writes anything', async () => {
+  process.env.EVENTPILOT_AI_RATE_LIMIT_PER_MINUTE = '1';
+  try {
+    await withApp([], async ({ call }) => {
+      const first = await call('/api/ai/consult', { method: 'POST', body: { message: 'A wedding for 200 people in Pune.', history: [], draft: {} } });
+      assert.ok([200, 503, 429].includes(first.status), `first attempt status ${first.status}`);
+      const second = await call('/api/ai/consult', { method: 'POST', body: { message: 'And 300 guests.', history: [], draft: {} } });
+      assert.equal(second.status, 429, 'the second attempt within the window is refused');
+      assert.equal(second.json.keepExistingData, true);
+      assert.equal((await call('/api/events')).json.length, 0, 'a refused turn creates no event');
+    });
+  } finally { delete process.env.EVENTPILOT_AI_RATE_LIMIT_PER_MINUTE; }
+});
+
 test('conversation is capped so history cannot bloat the store or the prompt', async (t) => {
   process.env.EVENTPILOT_AI_RATE_LIMIT_PER_MINUTE = '500';
   t.after(() => { delete process.env.EVENTPILOT_AI_RATE_LIMIT_PER_MINUTE; });
