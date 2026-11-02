@@ -12,3 +12,4 @@ visual-qa/
 *.tar.gz
 testwrite
 .verify-data/
+.verify-data-render/

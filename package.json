@@ -9,6 +9,7 @@
     "dev": "node --watch server.mjs",
     "test": "node --test",
     "verify:prod": "node scripts/verify-production.mjs",
+    "verify:render": "node scripts/verify-render-env.mjs",
     "check": "node --check server.mjs && node --check src/core.mjs && node --check src/ai.mjs && node --check src/ai-providers.mjs && node --check src/ai-validate.mjs && node --check src/planning.mjs && node --check src/db-store.mjs && node --check src/deployment.mjs && node --check public/app.js && node --check scripts/demo-server.mjs"
   },
   "engines": {
